@@ -1,0 +1,6 @@
+# SorghumBase v11 build orchestration — ignore regenerated state/logs/scratch.
+.state/
+logs/
+tmp/
+*.log
+node_modules/
