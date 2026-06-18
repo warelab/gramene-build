@@ -50,8 +50,13 @@ curl -sf "${ENSEMBL_REST}/info/ping?content-type=application/json" >/dev/null &&
 mysqlq() { mysql -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -p"${MYSQL_PASS}" -N -e "$1" 2>/dev/null; }
 ccount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${COMPARA_DB}'")"
 [ "${ccount}" = "1" ] && ok "compara db present on ${MYSQL_HOST}" || { warn "compara db ${COMPARA_DB} not found on ${MYSQL_HOST}"; fail=1; }
-vcount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='$("${NODE_BIN}" -e 'console.log(require("'"${ENSEMBL_DB_INFO}"'").variations[0].database)')'")"
-[ "${vcount}" = "1" ] && ok "variation db present on ${MYSQL_HOST}" || warn "variation db not found"
+vdb="$("${NODE_BIN}" -e 'const v=(require("'"${ENSEMBL_DB_INFO}"'").variations||[]); process.stdout.write(v[0]&&v[0].database?v[0].database:"")')"
+if [ -n "${vdb}" ]; then
+  vcount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${vdb}'")"
+  [ "${vcount}" = "1" ] && ok "variation db ${vdb} present on ${MYSQL_HOST}" || warn "variation db ${vdb} not found"
+else
+  log "no variation dbs declared in ensembl_db_info.json (skipping variation check)"
+fi
 
 if [ "${fail}" -ne 0 ]; then die "preflight failed — fix the warnings above before building"; fi
 stage_end
