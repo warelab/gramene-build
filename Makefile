@@ -34,7 +34,7 @@ ST    := stages
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
-        58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services
+        56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services
 
 28_grassius_source:
 	bash $(ST)/28_grassius_source.sh
@@ -93,7 +93,9 @@ $(S)/52_tree_domains.done: $(S)/50_genes_decorate.done $(S)/15_ontologies.done
 	bash $(ST)/52_tree_domains.sh
 $(S)/55_atlas.done: $(S)/10_maps.done
 	bash $(ST)/55_atlas.sh
-$(S)/58_expression_attributes.done: $(S)/55_atlas.done $(S)/50_genes_decorate.done
+$(S)/56_project_maize_v4v5.done: $(S)/55_atlas.done
+	bash $(ST)/56_project_maize_v4v5.sh
+$(S)/58_expression_attributes.done: $(S)/56_project_maize_v4v5.done $(S)/50_genes_decorate.done
 	bash $(ST)/58_expression_attributes.sh
 $(S)/60_solr_genes.done: $(S)/50_genes_decorate.done $(S)/58_expression_attributes.done
 	bash $(ST)/60_solr_genes.sh
@@ -117,6 +119,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 50_genes_decorate: $(S)/50_genes_decorate.done
 52_tree_domains: $(S)/52_tree_domains.done
 55_atlas: $(S)/55_atlas.done
+56_project_maize_v4v5: $(S)/56_project_maize_v4v5.done
 58_expression_attributes: $(S)/58_expression_attributes.done
 60_solr_genes: $(S)/60_solr_genes.done
 65_solr_suggestions: $(S)/65_solr_suggestions.done
@@ -125,7 +128,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 status:
 	@for s in 00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
 	          35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
-	          58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services; do \
+	          56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services; do \
 	  if [ -f $(S)/$$s.done ]; then echo "  [x] $$s ($$(cat $(S)/$$s.done))"; else echo "  [ ] $$s"; fi; \
 	done
 
@@ -150,7 +153,7 @@ refresh-genes:
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
 	$(MAKE) all
 refresh-expression:
-	rm -f $(S)/55_atlas.done $(S)/58_expression_attributes.done $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/55_atlas.done $(S)/56_project_maize_v4v5.done $(S)/58_expression_attributes.done $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
 	$(MAKE) all
 refresh-reactome:
 	rm -f $(S)/25_reactome.done $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \

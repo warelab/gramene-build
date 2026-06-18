@@ -35,6 +35,27 @@ rm -f ./*.assays_cache.json ./ref_*.json ./inv_*.json ./prog_*.json \
 log "building expression attributes from mongo (${MONGO_DB}) via expression_pipeline/build.py"
 MONGO_URI="${MONGO_URI}" MONGO_DB="${MONGO_DB}" python3 build.py
 
+# ── INVARIANT: each genome's JSONL must be COMPLETE (one line per expression-bearing gene) ──
+# Guards against silent stream truncation (see mongo_source._stream): a partial JSONL would ship
+# an incomplete expression_attributes collection (this is exactly how maize once shipped 17,468 of
+# 44,303). Compare each <short>_attributes.jsonl line count to the discovered genes-with-expression.
+log "verifying per-genome completeness (jsonl lines == genes-with-expression)"
+MONGO_URI="${MONGO_URI}" MONGO_DB="${MONGO_DB}" python3 - <<'PY' || die "expression_attributes completeness check FAILED — a genome's JSONL is short of its genes-with-expression (stream truncation?); do NOT ship this partial collection"
+import json, os, sys, mongo_source
+genomes = mongo_source.discover_genomes(json.load(open("manifest.json")).get("genomes"))
+short = {int(t): sp["short"] for t, sp in json.load(open("expression_panel.json"))["species"].items()}
+bad = 0
+for g in genomes:
+    s = short.get(g["taxon"], g["system_name"])
+    jp = s + "_attributes.jsonl"
+    have = sum(1 for _ in open(jp)) if os.path.exists(jp) else 0
+    want = g["n_genes"]
+    print("  %-28s jsonl=%-7d genes_with_expr=%-7d %s" % (s, have, want, "OK" if have == want else "MISMATCH"))
+    bad += (have != want)
+sys.exit(1 if bad else 0)
+PY
+ok "all genomes complete (jsonl == genes-with-expression)"
+
 # fresh-load every per-genome JSONL into the expression_attributes collection (keyed on _id)
 shopt -s nullglob
 files=( *_attributes.jsonl )
