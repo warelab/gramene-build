@@ -7,7 +7,8 @@
 # Self-contained: does NOT source config.sh up front, because config.sh derives the
 # db name by require()-ing collections.js, which needs node_modules to exist first.
 set -euo pipefail
-RELEASE_ROOT="/usr/local/gramene/subsites/sorghum/v11"
+# derive RELEASE_ROOT from this script's location (build/stages/05_install.sh -> RELEASE_ROOT)
+RELEASE_ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../.." && pwd)"
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 say() { echo "[$(ts)] $*" >&2; }
 
