@@ -50,6 +50,22 @@ curl -sf "${ENSEMBL_REST}/info/ping?content-type=application/json" >/dev/null &&
 mysqlq() { mysql -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -p"${MYSQL_PASS}" -N -e "$1" 2>/dev/null; }
 ccount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${COMPARA_DB}'")"
 [ "${ccount}" = "1" ] && ok "compara db present on ${MYSQL_HOST}" || { warn "compara db ${COMPARA_DB} not found on ${MYSQL_HOST}"; fail=1; }
+
+# --- source data actually LOADED, not just schema present -------------------
+# (release70 cores can exist as empty shells before the data import runs; without
+#  this, the build fails mid-stage with a cryptic 'taxon_id in ()' SQL error.)
+gdb_rows="$(mysqlq "SELECT COUNT(*) FROM ${COMPARA_DB}.genome_db")"
+[ "${gdb_rows:-0}" -gt 0 ] 2>/dev/null \
+  && ok "compara has data (genome_db=${gdb_rows})" \
+  || { warn "compara ${COMPARA_DB} is EMPTY (genome_db=${gdb_rows:-0}) — source data not loaded on ${MYSQL_HOST}"; fail=1; }
+core1="$("${NODE_BIN}" -e 'console.log((require("'"${ENSEMBL_DB_INFO}"'").cores[0]||{}).database||"")')"
+if [ -n "${core1}" ]; then
+  c1g="$(mysqlq "SELECT COUNT(*) FROM ${core1}.gene")"
+  [ "${c1g:-0}" -gt 0 ] 2>/dev/null \
+    && ok "cores loaded (e.g. ${core1}: ${c1g} genes)" \
+    || { warn "core ${core1} has 0 genes — cores not loaded on ${MYSQL_HOST}"; fail=1; }
+fi
+
 vdb="$("${NODE_BIN}" -e 'const v=(require("'"${ENSEMBL_DB_INFO}"'").variations||[]); process.stdout.write(v[0]&&v[0].database?v[0].database:"")')"
 if [ -n "${vdb}" ]; then
   vcount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${vdb}'")"
