@@ -23,6 +23,12 @@ GXA=https://ftp.ebi.ac.uk/pub/databases/microarray/data/atlas/experiments
 # clean slate (all three are insert-only)
 mongo_drop experiments; mongo_drop assays; mongo_drop expression
 
+# build the descendant->genome taxon remap (from compara ncbi_taxa_node) so getAtlasData keeps
+# experiments tagged with a subspecies/cultivar taxon below a genome (remapping them to the genome
+# taxon). Non-fatal: getAtlasData falls back to its static map if this file is absent.
+log "building descendant->genome taxon remap from ${COMPARA_DB}"
+"${NODE_BIN}" "${A}/build_taxon_remap.js" || warn "taxon remap build failed (non-fatal; getAtlasData uses static map)"
+
 log "downloading assaygroup + contrast detail tables"
 curl -fsSL "${GXA}/assaygroupsdetails.tsv" -o assaygroupsdetails.tsv
 curl -fsSL "${GXA}/contrastdetails.tsv"    -o contrastdetails.tsv
