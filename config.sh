@@ -72,7 +72,13 @@ if [ -f "${ENSEMBL_DB_INFO}" ]; then
 fi
 
 # --- preflight invariants (release70 on colden, discovered) ------------------
-export EXPECT_CORES=266        # *_core_70_116_* on colden
+export EXPECT_CORES=267        # 266 *_core_70_116_* on colden + 1 borrowed prev-release core:
+                              # lathyrus_sativus_core_69_114_1 (its _70_116 core is an empty shell,
+                              # but lathyrus IS in compara_plants_70_116; the 69 core has the SAME
+                              # assembly JIC_Lsat_v2.1.1 / 2024-04 geneset, 31719 genes, and 100% of
+                              # compara70's lathyrus stable_ids resolve against it — so homologs/trees
+                              # resolve with no dangling refs. Drop to 266 + remove the json entry once
+                              # lathyrus_sativus_core_70_116_1 is loaded on colden.
 export EXPECT_ANCHORS=0        # main release: no pan-genome anchors
 # get_ensembl_db_info.js discovers cores only (variations:[] -> 0). colden HAS 24
 # *_variation_70_116_* dbs; to enable VEP, add them to ensembl_db_info.json's

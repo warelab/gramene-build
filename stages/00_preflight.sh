@@ -39,12 +39,17 @@ read -r ncores nvar nanchor jcompara < <("${NODE_BIN}" -e '
 # --- live services ----------------------------------------------------------
 "${MONGOSH}" --quiet "${MONGO_URI}/admin" --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 \
   && ok "mongo reachable at ${MONGO_URI}" || { warn "mongo unreachable"; fail=1; }
-if "${MONGOSH}" --quiet "${MONGO_URI}/${PREV_DB}" --eval 'db.genes.countDocuments({})' >/dev/null 2>&1; then
+# estimatedDocumentCount() (metadata read, instant) not countDocuments({}) — the latter is a full
+# aggregation scan that takes minutes on a large prev-release genes collection (search69 ~11.8M docs)
+# and only needs to confirm the collection is present here.
+if "${MONGOSH}" --quiet "${MONGO_URI}/${PREV_DB}" --eval 'db.genes.estimatedDocumentCount()' >/dev/null 2>&1; then
   ok "previous release ${PREV_DB} present (will NOT be modified)"
 fi
-curl -sf "${SOLR_URL}/admin/cores?action=STATUS&wt=json" >/dev/null && ok "solr reachable at ${SOLR_URL}" || { warn "solr unreachable"; fail=1; }
+# --max-time so a down/slow service fails the probe instead of hanging preflight forever
+# (ensembl-rest is optional — only maps QC + VEP — but without a timeout its curl blocks indefinitely).
+curl -sf --max-time 10 "${SOLR_URL}/admin/cores?action=STATUS&wt=json" >/dev/null && ok "solr reachable at ${SOLR_URL}" || { warn "solr unreachable"; fail=1; }
 redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" ping >/dev/null 2>&1 && ok "redis reachable" || { warn "redis unreachable"; fail=1; }
-curl -sf "${ENSEMBL_REST}/info/ping?content-type=application/json" >/dev/null && ok "ensembl-rest reachable at ${ENSEMBL_REST}" || warn "ensembl-rest unreachable (only needed for maps QC + VEP)"
+curl -sf --max-time 10 "${ENSEMBL_REST}/info/ping?content-type=application/json" >/dev/null && ok "ensembl-rest reachable at ${ENSEMBL_REST}" || warn "ensembl-rest unreachable (only needed for maps QC + VEP)"
 
 # --- mysql source dbs exist -------------------------------------------------
 mysqlq() { mysql -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -p"${MYSQL_PASS}" -N -e "$1" 2>/dev/null; }
