@@ -80,9 +80,10 @@ export EXPECT_CORES=267        # 266 *_core_70_116_* on colden + 1 borrowed prev
                               # resolve with no dangling refs. Drop to 266 + remove the json entry once
                               # lathyrus_sativus_core_70_116_1 is loaded on colden.
 export EXPECT_ANCHORS=0        # main release: no pan-genome anchors
-# get_ensembl_db_info.js discovers cores only (variations:[] -> 0). colden HAS 24
-# *_variation_70_116_* dbs; to enable VEP, add them to ensembl_db_info.json's
-# "variations" array and bump this to 24. Left at 0 so preflight passes as-generated.
-export EXPECT_VARIATIONS=0
+# get_ensembl_db_info.js discovers cores only, so the 24 *_variation_70_116_* dbs on colden
+# were added to ensembl_db_info.json's "variations" array by hand (matched by the _variation_70_116_
+# name pattern). Only 2 carry QTLs (oryza_sativa ~8.3k, sorghum_bicolor ~5.8k) which stage
+# 20_variation loads into the qtls collection; the rest are present for VEP (still disabled).
+export EXPECT_VARIATIONS=24
 
 export MONGOSH="$(command -v mongosh || command -v mongo)"
