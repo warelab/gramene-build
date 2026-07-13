@@ -20,7 +20,9 @@ ASSOC="${MONGODB_REPO}/reactome/genes_to_pathways.json"
 ls tmp/*.json.gz >/dev/null 2>&1 || die "no gene dumps in ${SEARCH}/tmp — run 40_genes_dump first"
 [ -s "${ASSOC}" ] || die "missing ${ASSOC} — run 25_reactome first"
 for c in maps taxonomy GO PO TO domains qtls pathways genetree; do assert_mongo_min "$c" 1; done
-hsz="$(redis_dbsize "${REDIS_HOMOLOG_DB}")"; [ "${hsz:-0}" -gt 0 ] || die "redis homolog db ${REDIS_HOMOLOG_DB} empty — run 45_homologs"
+HOMOLOG_LMDB="${HOMOLOG_LMDB:-${SEARCH}/homologs.lmdb}"
+hentries="$("${NODE_BIN}" -e 'const {open}=require("lmdb");const d=open({path:process.argv[1],readOnly:true,dupSort:true,encoding:"string"});console.log(d.getStats().entryCount);d.close()' "${HOMOLOG_LMDB}" 2>/dev/null)"
+[ "${hentries:-0}" -gt 0 ] || die "homolog LMDB ${HOMOLOG_LMDB} empty/missing — run 45_homologs"
 
 # ---- re-verify dumps line up with maps BEFORE we ingest (cheap insurance) ----
 log "re-validating gene dumps vs maps.num_genes"
