@@ -17,14 +17,15 @@ assert_mongo_min genes 1000
 GENES="${SOLR_REPO}/genes"
 cd "${GENES}"
 
-# 1) core. Prefer the PREVIOUS release's core conf — it is the authoritative,
-# complete schema that matches mongo2solr's output (the repo conf lags and is
-# missing fields like closest_rep_identity). Fall back to the repo conf.
+# 1) core. Prefer the REPO conf (gramene-solr/genes/conf) — it is now the authoritative,
+# complete schema: synced from the deployed prev-release conf (atlas_id, closest_rep_identity,
+# model_rep_identity) plus the alt_id field, and it matches mongo2solr's output. Fall back to
+# the previous release's deployed core conf only if the repo conf is missing.
 # Recreate fresh only when the core is empty/absent (or REBUILD_CORE=1); if it
 # already holds docs from an interrupted load, KEEP them and let the chunk loader
 # resume (it skips the already-committed docs).
-CONF="${SOLR_DATA_DIR}/${PREV_GENES_CORE}/conf"
-[ -d "${CONF}" ] || CONF="${GENES}/conf"
+CONF="${GENES}/conf"
+[ -d "${CONF}" ] || CONF="${SOLR_DATA_DIR}/${PREV_GENES_CORE}/conf"
 existing="$(solr_numdocs "${SOLR_GENES_CORE}" 2>/dev/null || echo 0)"
 if [ "${existing:-0}" -eq 0 ] || [ "${REBUILD_CORE:-0}" = "1" ]; then
   log "using genes conf: ${CONF}"
