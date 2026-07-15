@@ -34,10 +34,12 @@ const stripTx = id => id.replace(/\.\d+$/, '');   // drop transcript suffix Sb01
   for (const { grassius, system_name } of specs) {
     // build id/synonym -> current _id lut for this species
     const lut = {};
-    const cur = genes.find({ system_name }, { projection: { _id: 1, synonyms: 1 } });
+    const cur = genes.find({ system_name }, { projection: { _id: 1, synonyms: 1, alt_id: 1 } });
     for await (const g of cur) {
       lut[g._id] = g._id;
       (g.synonyms || []).forEach(s => { if (s) lut[s] = g._id; lut[stripTx(s)] = g._id; });
+      // GRASSIUS maps old-assembly ids (Sb.../Sobic.../GRMZM...) that now live in alt_id
+      (g.alt_id || []).forEach(s => { if (s) lut[s] = g._id; lut[stripTx(s)] = g._id; });
     }
     // fetch the grassius csv
     let csv;

@@ -18,8 +18,9 @@ SUGG="${SOLR_REPO}/suggestions"
 cd "${SUGG}"
 GENES_URL="${SOLR_URL}/${SOLR_GENES_CORE}"
 
-# fresh core — prefer the previous release's core conf (authoritative schema)
-CONF="${SOLR_DATA_DIR}/${PREV_SUGG_CORE}/conf"; [ -d "${CONF}" ] || CONF="${SUGG}/conf"
+# fresh core — prefer the REPO conf (now synced to the live sorghum_suggestions11 conf:
+# Solr 8.2 managed-schema); fall back to the previous release's deployed core conf.
+CONF="${SUGG}/conf"; [ -d "${CONF}" ] || CONF="${SOLR_DATA_DIR}/${PREV_SUGG_CORE}/conf"
 log "using suggestions conf: ${CONF}"
 solr_recreate_core "${SOLR_SUGG_CORE}" "${CONF}"
 
