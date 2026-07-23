@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # --- repo layout -------------------------------------------------------------
-export RELEASE_ROOT="/usr/local/gramene/subsites/sorghum/v11"
+export RELEASE_ROOT="/usr/local/gramene/subsites/sorghum/v10b"
 export BUILD_DIR="${RELEASE_ROOT}/build"
 export MONGODB_REPO="${RELEASE_ROOT}/gramene-mongodb"
 export MONGOCONFIG_REPO="${RELEASE_ROOT}/gramene-mongodb-config"
@@ -43,13 +43,17 @@ export DB_VERSION="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.st
 export MONGO_DB="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).db))')"
 export MONGO_URI="mongodb://${MONGO_HOST}:${MONGO_PORT}"
 
-# species prefix + previous release (for diffs / core conf templates)
+# species prefix + previous release (for diffs / core conf templates).
+# DB_VERSION may be non-numeric (e.g. "10b" — a re-tag of the v10-data build made
+# while v11 was in flight), so PREV can't be computed as $((DB_VERSION-1)). Set it
+# explicitly: the previous real release is v10.
 export SPECIES="sorghum"
-export PREV_DB="${SPECIES}$((DB_VERSION-1))"          # sorghum10
-export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"        # sorghum_genes11
-export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"   # sorghum_suggestions11
-export PREV_GENES_CORE="${SPECIES}_genes$((DB_VERSION-1))"
-export PREV_SUGG_CORE="${SPECIES}_suggestions$((DB_VERSION-1))"
+export PREV_VERSION="${PREV_VERSION:-10}"
+export PREV_DB="${SPECIES}${PREV_VERSION}"          # sorghum10
+export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"        # sorghum_genes10b
+export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"   # sorghum_suggestions10b
+export PREV_GENES_CORE="${SPECIES}_genes${PREV_VERSION}"
+export PREV_SUGG_CORE="${SPECIES}_suggestions${PREV_VERSION}"
 
 # --- solr gene attribute tables (merged into solr docs via add_attributes.pl) ---
 # MAKER (AED/QI gene-model quality scores) and VEP (germplasm/PTV from the variation
@@ -58,7 +62,7 @@ export PREV_SUGG_CORE="${SPECIES}_suggestions$((DB_VERSION-1))"
 # a new variation/MAKER release (VEP: vep/dump_gene_level_VEP_table.pl + munge_vep.pl;
 # MAKER: /scratch/olson/28_sorg_maker_AED/munge_MAKER.pl + process_gff3.sh) and point
 # these at the new files. grassius_homolog is always projected fresh (build/grassius_homolog_table.js).
-export PREV_RELEASE_ROOT="${PREV_RELEASE_ROOT:-/usr/local/gramene/subsites/${SPECIES}/v$((DB_VERSION-1))}"
+export PREV_RELEASE_ROOT="${PREV_RELEASE_ROOT:-/usr/local/gramene/subsites/${SPECIES}/v${PREV_VERSION}}"
 export MAKER_TABLE="${MAKER_TABLE:-${PREV_RELEASE_ROOT}/gramene-solr/genes/maker_attrib_table_for_solr.txt}"
 export VEP_TABLE="${VEP_TABLE:-${PREV_RELEASE_ROOT}/gramene-solr/vep/vep_attributes.txt}"
 
