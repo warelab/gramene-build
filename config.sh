@@ -84,9 +84,9 @@ if [ -f "${ENSEMBL_DB_INFO}" ]; then
 fi
 
 # --- expected invariants (preflight validates against these) -----------------
-export EXPECT_CORES=125
+export EXPECT_CORES=128
 export EXPECT_ANCHORS=9
-export EXPECT_VARIATIONS=1
+export EXPECT_VARIATIONS=2
 
 # convenience: the mongo shell (prefer mongosh, fall back to mongo)
 export MONGOSH="$(command -v mongosh || command -v mongo)"

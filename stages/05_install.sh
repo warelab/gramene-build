@@ -21,6 +21,21 @@ for repo in gramene-mongodb gramene-solr gramene-swagger gramene-ebeye; do
   ( cd "${RELEASE_ROOT}/${repo}" && npm install --no-audit --no-fund --ignore-scripts )
 done
 
+# 2b) force node_modules/gramene-mongodb-config to be a SYMLINK to the local checkout.
+# Despite the `file:../gramene-mongodb-config` dependency, this npm COPIES the package instead of
+# linking it, so edits to the on-disk collections.js are invisible to the ETL — a collection added
+# there simply comes back undefined at runtime, which is exactly how a homologs loader died mid-build
+# after npm install silently replaced a hand-made symlink. Re-link every time, after npm has run.
+for repo in gramene-mongodb gramene-solr gramene-swagger gramene-ebeye; do
+  t="${RELEASE_ROOT}/${repo}/node_modules/gramene-mongodb-config"
+  [ -d "${RELEASE_ROOT}/${repo}/node_modules" ] || continue
+  if [ ! -L "${t}" ]; then
+    rm -rf "${t}"
+    ln -s ../../gramene-mongodb-config "${t}"
+    say "relinked ${repo}/node_modules/gramene-mongodb-config -> local checkout"
+  fi
+done
+
 # 3) now config.sh can load — verify the config the ETL code will actually use
 . "${RELEASE_ROOT}/build/config.sh"
 . "${RELEASE_ROOT}/build/lib.sh"

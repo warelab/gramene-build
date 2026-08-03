@@ -21,7 +21,18 @@ log "mysql source      = ${MYSQL_USER}@${MYSQL_HOST}"
 # --- config is the LOCAL checkout (single source of truth) -------------------
 cfg_link="${MONGODB_REPO}/node_modules/gramene-mongodb-config"
 if [ -L "${cfg_link}" ]; then ok "gramene-mongodb-config is a symlink to the local checkout"; \
-  else warn "gramene-mongodb-config in node_modules is NOT a symlink — local edits may not take effect"; fi
+  else warn "gramene-mongodb-config in node_modules is NOT a symlink — local edits to collections.js are INVISIBLE to the ETL (05_install relinks it)"; fi
+# Stronger than the symlink check: prove the collections the pipeline needs actually resolve from
+# the consumer's own module path. A copied (stale) config makes a newly-added collection come back
+# undefined, which fails deep inside a stage rather than here.
+missing_coll="$(cd "${MONGODB_REPO}/search" && "${NODE_BIN}" -e '
+  var c=require("gramene-mongodb-config");
+  var need=["genes","genetrees","maps","taxonomy","qtls","domains","pathways","homologs",
+            "GO","PO","TO","germplasm","experiments","assays","expression","expression_attributes"];
+  process.stdout.write(need.filter(function(n){return !c[n]}).join(","));
+  setTimeout(function(){process.exit(0)},50)' 2>/dev/null)"
+[ -z "${missing_coll}" ] && ok "all required collections resolve from gramene-mongodb-config" \
+  || { warn "collections MISSING from gramene-mongodb-config: ${missing_coll} — node_modules copy is stale, re-run 05_install"; fail=1; }
 got_db="$(cd "${MONGODB_REPO}" && "${NODE_BIN}" -e 'var c=require("gramene-mongodb-config");process.stdout.write(c.getMongoConfig().db);setTimeout(()=>process.exit(0),50)')"
 [ "${got_db}" = "${MONGO_DB}" ] && ok "ETL config resolves to ${got_db}" || { warn "ETL config resolves to ${got_db}, expected ${MONGO_DB}"; fail=1; }
 
