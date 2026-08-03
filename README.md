@@ -74,7 +74,7 @@ Every stage tees to `logs/<stage>.log` and, on success, stamps `.state/<stage>.d
 | 30_curated | curated/curated.json | thalemine/rapdb + redis db3 | overwrite |
 | 35_genetrees | genetree | mysql compara + curated.json | drops first |
 | 40_genes_dump | search/tmp/*.json.gz | mysql cores | resumable; gated vs maps |
-| 45_homologs | redis db9 | mysql compara | self-flushing |
+| 45_homologs | homologs | mysql compara | drop-based |
 | 50_genes_decorate | genes (+ indexes) | tmp dumps + all aux collections | drops first |
 | 52_tree_domains | genetree (domains on leaves) | genes + domains | updateOne |
 | 55_atlas *(optional)* | experiments, assays, expression | EBI Atlas | drops first |
@@ -85,8 +85,8 @@ Every stage tees to `logs/<stage>.log` and, on success, stamps `.state/<stage>.d
 ## Prerequisites (verified by `00_preflight`)
 
 * mongo, solr (`http://localhost:8983`), redis, ensembl REST (`http://localhost:3000`)
-* mysql access to host `cabot` (compara + 125 cores + variation)
-* `ensembl_db_info.json` with 125 cores, 9 `anchor` flags, 1 variation, the right compara
+* mysql access to host `cabot` (compara + 128 cores + variation)
+* `ensembl_db_info.json` with 128 cores, 9 `anchor` flags, 2 variations, the right compara
 * **GeneRIFs in redis db 3** — loaded separately from NCBI (see below); reused across builds.
 
 ## Source fixes applied (genuine bugs the recipe glossed over)
@@ -147,6 +147,34 @@ re-decorating: `make refresh-attributes`.
   point `MAKER_TABLE`/`VEP_TABLE` at the new files. Otherwise both are reused as-is.
 * **Deployment** (apache proxy, firewall, ensembl REST registry, BLAST dumps): see
   the checklist printed by `70_services` — infra steps the build won't auto-apply.
+
+## Build invariants enforced by the stages
+
+Each of these exists because a violation shipped, or nearly shipped, a silently wrong index.
+They fail the build rather than warn.
+
+* **`05_install` relinks `gramene-mongodb-config`.** npm *copies* the `file:../` dependency instead
+  of symlinking it, so edits to `collections.js` are invisible to the ETL and a newly added
+  collection comes back `undefined` deep inside a later stage. The stage forces a symlink after
+  npm runs; `00_preflight` additionally asserts every required collection resolves.
+* **`40_genes_dump` gates dumps against maps.** Gene docs embed `taxon_id`, and the synthetic
+  per-genome taxon ids are *reassigned* whenever the genome set changes — with gene counts
+  unchanged, so the line-count check cannot see it. Dumps older than `.state/10_maps.done` are
+  re-dumped, and every dump's `taxon_id` must equal `maps.taxon_id` for that genome.
+* **`65_solr_suggestions` gates suggestions against the genes core.** Both suggestion layers are
+  derived from that core; a well-formed but stale `genes.json` once produced ~170k suggestions for
+  genes that no longer existed. Inputs older than `.state/60_solr_genes.done` are regenerated, and
+  the primary-id count must equal the genes core.
+* **`decorate` reports stalls instead of hanging.** Most adders are `promise.then(... done())` with
+  no rejection handler, so a throw leaves `done()` uncalled and deadlocks the pipeline with no
+  output. Per-stage counters plus a watchdog name the stage that swallowed a gene and exit;
+  `ancestor_adder` and `homolog_adder` surface their own errors.
+
+## Gene-tree stable ids
+
+Trees whose compara `stable_id` is NULL get a synthetic id `SB<version>GT_<root_id>`, derived from
+`collections.getVersion()` (so v11 emits `SB11GT_`). It was previously hardcoded and labelled v11
+trees with the release-10 prefix. Override with `GT_PREFIX` if a release needs another scheme.
 
 ## Tunables (env vars)
 
