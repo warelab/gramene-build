@@ -30,15 +30,22 @@ solr_host="$(echo "${SOLR_URL}" | sed -E 's#https?://##; s#/solr.*##')"
 perl -pi -e "s{var urlBase = 'https?://[^/]+/solr/${SPECIES}_';}{var urlBase = '${SOLR_URL}/${SPECIES}_';}" "${SJ}"
 grep -q "${SOLR_URL}/${SPECIES}_" "${SJ}" && ok "solr.js urlBase -> ${SOLR_URL}/${SPECIES}_" || warn "solr.js urlBase not updated — check ${SJ} manually"
 
-# swagger port
-perl -pi -e "s{var port = \d+;.*}{var port = ${SWAGGER_PORT};}" "${SWAGGER_REPO}/app.js"
-ok "swagger app.js port -> ${SWAGGER_PORT}"
+# swagger port. Both `var port = 5010;` and `var port = process.env.PORT || 5010;` occur in the
+# wild — the older pattern only matched the first, silently left the port untouched, and still
+# printed ok. That mismatch is how ebeye ended up pointed at a port swagger never listened on.
+# Match either form, then VERIFY rather than assume.
+perl -pi -e "s{var port = (?:process\.env\.PORT \|\| )?\d+;}{var port = process.env.PORT || ${SWAGGER_PORT};}" "${SWAGGER_REPO}/app.js"
+grep -qE "var port = process\.env\.PORT \|\| ${SWAGGER_PORT};" "${SWAGGER_REPO}/app.js" \
+  && ok "swagger app.js port -> ${SWAGGER_PORT}" \
+  || die "could not set the swagger port in ${SWAGGER_REPO}/app.js — check it by hand"
 
 # ---- gramene-ebeye edits ----
 EA="${EBEYE_REPO}/app.js"
 perl -pi -e "s{const DEFAULT_PORT = \d+;}{const DEFAULT_PORT = ${EBEYE_PORT};}" "${EA}"
 perl -pi -e "s{defaultServer: \"[^\"]*\"}{defaultServer: \"${SWAGGER_URL_LOCAL}\"}" "${EA}"
-ok "ebeye app.js DEFAULT_PORT=${EBEYE_PORT}, defaultServer=${SWAGGER_URL_LOCAL}"
+grep -q "const DEFAULT_PORT = ${EBEYE_PORT};" "${EA}" && grep -q "defaultServer: \"${SWAGGER_URL_LOCAL}\"" "${EA}" \
+  && ok "ebeye app.js DEFAULT_PORT=${EBEYE_PORT}, defaultServer=${SWAGGER_URL_LOCAL}" \
+  || die "could not set the ebeye port/defaultServer in ${EA} — check it by hand"
 
 # ---- optionally (re)start under pm2 ----
 if [ "${START_SERVICES:-0}" = "1" ] && command -v pm2 >/dev/null; then
