@@ -59,7 +59,11 @@ export PREV_SUGG_CORE="${SPECIES}_suggestions$((DB_VERSION-1))"
 # MAKER: /scratch/olson/28_sorg_maker_AED/munge_MAKER.pl + process_gff3.sh) and point
 # these at the new files. grassius_homolog is always projected fresh (build/grassius_homolog_table.js).
 export PREV_RELEASE_ROOT="${PREV_RELEASE_ROOT:-/usr/local/gramene/subsites/${SPECIES}/v$((DB_VERSION-1))}"
-export MAKER_TABLE="${MAKER_TABLE:-${PREV_RELEASE_ROOT}/gramene-solr/genes/maker_attrib_table_for_solr.txt}"
+# v11 has its own MAKER table: the 28 genomes carried over from release 10 PLUS the 9 pan-genome
+# accessions whose MAKER GFFs arrived for this release (built by
+# /scratch/olson/sorghum_v11_maker_AED/build_maker_tables.sh). It is a real file here rather than
+# the previous release's — v10 serves its copy through a symlink, so that one must not be edited.
+export MAKER_TABLE="${MAKER_TABLE:-${SOLR_REPO}/genes/maker_attrib_table_for_solr.txt}"
 export VEP_TABLE="${VEP_TABLE:-${PREV_RELEASE_ROOT}/gramene-solr/vep/vep_attributes.txt}"
 
 # --- services ----------------------------------------------------------------
