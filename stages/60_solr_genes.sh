@@ -86,8 +86,21 @@ else
 fi
 
 if [ "${#attr_tables[@]}" -gt 0 ]; then
-  # reuse a complete attribs file across kill-resumes
-  if [ -s solr_genes.attribs.json ] && tail -c 3 solr_genes.attribs.json | grep -q ']' \
+  # Reuse a complete attribs file across kill-resumes — but ONLY if it is newer than every input.
+  # "Complete" (closing ']' + matching line count) says nothing about whether the merged VALUES are
+  # current: several of these tables are regenerated from mongo on every run, so a rebuilt
+  # expression_attributes collection produced a fresh expression_attributes_table.txt while this
+  # file was reused untouched, and the index kept serving the previous release's values.
+  attribs_stale=0
+  if [ -s solr_genes.attribs.json ]; then
+    for t in "${attr_tables[@]}" solr_genes.json; do
+      if [ -e "$t" ] && [ "$t" -nt solr_genes.attribs.json ]; then
+        log "attribute input newer than solr_genes.attribs.json: $(basename "$t") — will re-merge"
+        attribs_stale=1
+      fi
+    done
+  fi
+  if [ "${attribs_stale}" -eq 0 ] && [ -s solr_genes.attribs.json ] && tail -c 3 solr_genes.attribs.json | grep -q ']' \
      && [ "$(wc -l < solr_genes.attribs.json)" = "$(wc -l < solr_genes.json)" ]; then
     log "reusing existing complete solr_genes.attribs.json"
   else
