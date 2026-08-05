@@ -4,3 +4,10 @@ logs/
 tmp/
 *.log
 node_modules/
+
+# Generated Ensembl registries. These embed the MySQL password, and this repo
+# otherwise tracks no credentials. Regenerate: node make_reg_pm.js > reg.pm
+reg.pm
+reg.merged.pm
+reg.merged.conflicts.txt
+reg.*.bak*
