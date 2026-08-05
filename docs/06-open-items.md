@@ -171,8 +171,8 @@ meaningful to this pipeline.
 
 ### `gramene-swagger`
 
-`docs/gene_lists_api.md` — the API reference rewritten for the new contract. **Should be committed**;
-it is the spec the client work depends on.
+`package-lock.json` only — npm churn; ignore. The API reference
+(`docs/gene_lists_api.md`) is committed and pushed as `81cb669`.
 
 ---
 
