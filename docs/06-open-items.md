@@ -5,22 +5,28 @@ produced it. Ordered by what blocks what.
 
 ---
 
-## Blocking: publish v11
+## Deployment status
 
-The build is complete and the services run, but **v11 is not reachable from the internet**. The
-manual infra steps from `make 70_services` have not been done:
+v11 **is publicly served**. Verified 2026-08-07:
 
-1. **Apache reverse proxy** on gorgonzola (`conf/extra/httpd-ssl.conf`, under `data.sorghumbase.org`):
-   `/sorghum_v11` → `squam:50011`; then `apachectl configtest && apachectl graceful`
-2. **Firewall** — open 50011 (swagger) and 51011 (ebeye)
-3. **Ensembl REST registry** — see below
-4. **BLAST** — re-run `ensure_blast.pl` against the updated registry, restart `gramene-blast`
-5. **Gene-tree curation UI** (`gramene-genetree-vis`) — point `defaultServerSb` at the v11 swagger
+| check | result |
+| --- | --- |
+| `https://data.sorghumbase.org/sorghum_v11/swagger` | 200, titled "API for sorghumbase release 11" |
+| `…/sorghum_v11/search?q=*:*&rows=0` | 5,407,132 — matches localhost:50011 and Mongo |
+| `…/sorghum_v11/gene_lists/validate` | serves the current `{resolved,ambiguous,unknown}` contract |
+| `…/sorghum_v10b/search?q=*:*&rows=0` | 5,248,909 — v10b still live and separate |
 
-Also needed while you are there: **the v10b ebeye moved to port 51010** and the Apache proxy for it
-needs updating to match.
+So of the `70_services` checklist, the Apache proxy and firewall are **done**. Still outstanding:
 
-### ⚠ ebeye `defaultServer` is currently pointed at localhost
+* **Ensembl REST registry** — see [below](#1-ensembl-rest-registry-merge). The shared registry file
+  is dated **2024-03-14**; `sorghum_pi656029` and `sorghum_bicolort2tcas` return 400 from REST while
+  `sorghum_bicolor` and `sorghum_353` resolve. REST reports 151 species.
+* **BLAST** — `gramene-blast` is online but its uptime predates the v11 build completing, so it has
+  not picked up this release. Needs the merged registry first, then `ensure_blast.pl` and a restart.
+* **Gene-tree curation UI** (`gramene-genetree-vis`) — point `defaultServerSb` at the v11 swagger.
+* **v10b ebeye moved to port 51010** — check the Apache proxy for it matches.
+
+### ebeye `defaultServer` is pointed at localhost
 
 `gramene-ebeye/app.js` has an uncommitted change:
 
@@ -29,10 +35,11 @@ needs updating to match.
 +global.gramene = {defaultServer: "http://localhost:50011/sorghum_v11/swagger"};
 ```
 
-`70_services` writes the local URL by design, which is right for local testing and **wrong for
-production** — the comment in that file explains that both the spec fetch and the API calls need to
-go over real TLS or you get `EPROTO`. Set it back to the `https://data.sorghumbase.org/...` form
-before publishing, and restart `sorghum_ebeye11`.
+`70_services` writes the local URL by design. Both URLs currently answer 200, so ebeye works either
+way from this host — this is not breaking anything today. But the committed `https://` value is the
+correct one for production: the comment in that file explains that the spec fetch and the API calls
+must go over real TLS or you get `EPROTO`. Restore it (`git checkout -- app.js` would also discard
+the alt_id fix below, so revert just that line) and restart `sorghum_ebeye11`.
 
 ---
 
@@ -149,9 +156,21 @@ Deliberately **not** committed:
 
 ### `gramene-ebeye`
 
-* `app.js` — the `defaultServer` change described above. **Must be reverted to the https URL before
-  publishing.**
+Two unrelated changes in the tree — commit them separately:
+
+* `src/translateResponseDocument.js` — **a live bug fix, should be committed.** `3743b55` added
+  `alt_id` to `FL`, which is both the Solr field list *and* the list `checkFields` walks to require
+  fields on every doc. `alt_id` is on only 107,226 of 5,407,132 genes, so EBeye threw
+  `Doc <id> missing field alt_id` on ~98% of results. The fix moves the exemptions into an
+  `OPTIONAL_FIELDS` list (`gene_tree`, `synonyms`, `alt_id`). Verified: error log stays at 0 bytes
+  across seven queries spanning sorghum, Arabidopsis and rice, and `alt_id` still exports into
+  `gene_synonym` where present.
+* `app.js` — the `defaultServer` change described above; restore the `https://` value.
 * `package-lock.json` — untracked npm churn; ignore.
+
+**Known, unfixed, in the same file:** `genetree: [result.gene_tree] || []` yields `[null]` for the
+~2.7M genes with no tree, because `[x]` is always truthy so the `|| []` never fires. Should be
+`result.gene_tree ? [result.gene_tree] : []`. EBI Search may reject a null inside an array.
 
 ### `gramene-mongodb`
 

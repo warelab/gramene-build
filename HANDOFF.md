@@ -32,8 +32,9 @@ scratch takes roughly **4 hours**.
 
 ## Current state (2026-08-05)
 
-**The v11 build is complete and the services are running.** It is *not* yet public — the Apache
-reverse proxy has not been pointed at it (item 1 below).
+**The v11 build is complete, the services are running, and the site is publicly served** at
+`https://data.sorghumbase.org/sorghum_v11` (verified: `/search` returns the v11 gene count and the
+API serves the current gene-lists contract). v10b remains live and separate at `/sorghum_v10b`.
 
 | | |
 | --- | --- |
@@ -50,13 +51,14 @@ The previous release, **v10b**, is still the live public site and must keep work
 
 Ordered by what blocks what. Details in [docs/06-open-items.md](docs/06-open-items.md).
 
-1. **Publish v11** — the manual infra steps the build deliberately does not automate: Apache proxy
-   `/sorghum_v11` → `squam:50011`, firewall, Ensembl REST registry, BLAST, gene-tree curation UI.
-   Printed as a checklist by `make 70_services`. **Nothing else on this list is user-visible until
-   this is done.**
-2. **Merge the Ensembl REST registry** — v11's 131 databases need to reach the shared REST registry
-   without disturbing the other 91 species. Tooling and a verified merged file are ready; see
+1. **Merge the Ensembl REST registry** — the shared registry is still the one from **2024-03-14**, so
+   REST does not know v11's newer genomes: `sorghum_pi656029` and `sorghum_bicolort2tcas` both
+   return 400, while the older shared species resolve fine. Anything driven by REST (genome browser,
+   maps QC) is incomplete until this lands. Tooling and a verified merged file are ready — see
    [docs/06-open-items.md](docs/06-open-items.md#1-ensembl-rest-registry-merge).
+2. **BLAST** — `gramene-blast` is online but has not been restarted since before the v11 build
+   finished, so it is almost certainly still serving the previous release's databases. Re-run
+   `ensure_blast.pl` against the merged registry (so it needs item 1 first), then restart it.
 3. **Update the web client for the new gene-lists API** — the save/validate contract changed. One
    of the changes fails *silently* in old clients. Full spec in
    `../gramene-swagger/docs/gene_lists_api.md`.
