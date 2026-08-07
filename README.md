@@ -84,7 +84,7 @@ Every stage tees to `logs/<stage>.log` and, on success, stamps `.state/<stage>.d
 
 ## Prerequisites (verified by `00_preflight`)
 
-* mongo, solr (`http://localhost:8983`), redis, ensembl REST (`http://localhost:3000`)
+* mongo, solr (`http://localhost:8983`), redis, ensembl REST (`https://data.gramene.org/pansite-ensembl-115` — the public pansite service)
 * mysql access to host `cabot` (compara + 128 cores + variation)
 * `ensembl_db_info.json` with 128 cores, 9 `anchor` flags, 2 variations, the right compara
 * **GeneRIFs in redis db 3** — loaded separately from NCBI (see below); reused across builds.

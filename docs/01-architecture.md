@@ -70,7 +70,7 @@ The four consumer repos depend on the config repo through a **local path** depen
 | MongoDB | `localhost:27017` | db `sorghum11`; **user data is in `userData1`** |
 | Solr | `localhost:8983` | cores `sorghum_genes11`, `sorghum_suggestions11` |
 | Redis | `localhost:6379` | db **3** = GeneRIFs (keyed by ensembl id), db **9** = homologs (legacy) |
-| Ensembl REST | `localhost:3000` | genome browser + maps QC; shared across all releases |
+| Ensembl REST | `https://data.gramene.org/pansite-ensembl-115` | maps QC. The **public pansite** service, not the local `:3000` one — that reads a registry dated 2024-03-14 and fails to resolve 91 of this release's 128 genomes. |
 
 ### User data lives outside the release database
 

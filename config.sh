@@ -69,7 +69,13 @@ export VEP_TABLE="${VEP_TABLE:-${PREV_RELEASE_ROOT}/gramene-solr/vep/vep_attribu
 # --- services ----------------------------------------------------------------
 export SOLR_URL="${SOLR_URL:-http://localhost:8983/solr}"
 export SOLR_DATA_DIR="${SOLR_DATA_DIR:-/solr/data}"
-export ENSEMBL_REST="${ENSEMBL_REST:-http://localhost:3000}"
+# The public pansite REST service, not the local one on :3000. The local instance reads the shared
+# registry at /usr/local/ensembl-87/ensembl-rest/reg.pm, which is dated 2024-03-14 and knows 151
+# species — 91 of this release's 128 genomes do not resolve there, so the maps QC in 10_maps was
+# reporting them all as missing. The public service carries 267 species and resolves all 128.
+# (Verified 2026-08-07: check_maps_in_ensembl_rest.js reports 0 unresolved against 115, 91 against
+# localhost:3000.) Point this back at a local instance only if its registry is actually current.
+export ENSEMBL_REST="${ENSEMBL_REST:-https://data.gramene.org/pansite-ensembl-115}"
 export REDIS_HOST="${REDIS_HOST:-localhost}"
 export REDIS_PORT="${REDIS_PORT:-6379}"
 # redis logical db assignments — these MUST match the hardcoded values in the

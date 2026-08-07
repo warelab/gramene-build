@@ -100,7 +100,7 @@ Set as environment variables:
 | --- | --- | --- |
 | `DUMP_PARALLELISM` | 6 | concurrent genome dumps in `40_genes_dump` |
 | `SOLR_URL` | `http://localhost:8983/solr` | |
-| `ENSEMBL_REST` | `http://localhost:3000` | |
+| `ENSEMBL_REST` | `https://data.gramene.org/pansite-ensembl-115` | public pansite REST; the local `:3000` registry is stale |
 | `MAKER_TABLE` / `VEP_TABLE` | see `config.sh` | attribute table paths |
 | `REBUILD_CORE=1` | — | force-recreate the Solr genes core |
 | `GT_PREFIX` | `SB<version>GT_` | synthetic gene-tree id prefix |

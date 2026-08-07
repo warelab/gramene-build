@@ -47,25 +47,25 @@ API serves the current gene-lists contract). v10b remains live and separate at `
 The previous release, **v10b**, is still the live public site and must keep working. Do not touch
 `sorghum10b`, `sorghum_genes10b`, `sorghum_suggestions10b`, or the v10b services.
 
-## The five things that need doing
+## The four things that need doing
 
 Ordered by what blocks what. Details in [docs/06-open-items.md](docs/06-open-items.md).
 
-1. **Merge the Ensembl REST registry** — the shared registry is still the one from **2024-03-14**, so
-   REST does not know v11's newer genomes: `sorghum_pi656029` and `sorghum_bicolort2tcas` both
-   return 400, while the older shared species resolve fine. Anything driven by REST (genome browser,
-   maps QC) is incomplete until this lands. Tooling and a verified merged file are ready — see
-   [docs/06-open-items.md](docs/06-open-items.md#1-ensembl-rest-registry-merge).
-2. **BLAST** — `gramene-blast` is online but has not been restarted since before the v11 build
-   finished, so it is almost certainly still serving the previous release's databases. Re-run
-   `ensure_blast.pl` against the merged registry (so it needs item 1 first), then restart it.
-3. **Update the web client for the new gene-lists API** — the save/validate contract changed. One
+1. **Update the web client for the new gene-lists API** — the save/validate contract changed. One
    of the changes fails *silently* in old clients. Full spec in
    `../gramene-swagger/docs/gene_lists_api.md`.
-4. **Re-run `make 35_genetrees`** — tree representatives were chosen before two fixes landed, so the
+2. **BLAST** — `gramene-blast` is online but has not been restarted since before the v11 build
+   finished, so it is almost certainly still serving the previous release's databases. Re-run
+   `ensure_blast.pl` with a registry covering the v11 cores (`node make_reg_pm.js > reg.pm`), then
+   restart it under pm2.
+3. **Re-run `make 35_genetrees`** — tree representatives were chosen before two fixes landed, so the
    stored trees are stale in a cosmetic-but-visible way.
-5. **Commit or discard the uncommitted files** scattered across five repos — listed exactly in
+4. **Commit or discard the uncommitted files** scattered across five repos — listed exactly in
    [docs/06-open-items.md](docs/06-open-items.md#uncommitted-work).
+
+**Resolved 2026-08-07:** the Ensembl REST registry item is gone. The public pansite service was
+updated and now carries all 128 of this release's genomes, so `ENSEMBL_REST` points there and
+nothing needs merging into the local registry.
 
 ## Ground rules
 

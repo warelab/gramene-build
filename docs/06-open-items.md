@@ -18,11 +18,9 @@ v11 **is publicly served**. Verified 2026-08-07:
 
 So of the `70_services` checklist, the Apache proxy and firewall are **done**. Still outstanding:
 
-* **Ensembl REST registry** — see [below](#1-ensembl-rest-registry-merge). The shared registry file
-  is dated **2024-03-14**; `sorghum_pi656029` and `sorghum_bicolort2tcas` return 400 from REST while
-  `sorghum_bicolor` and `sorghum_353` resolve. REST reports 151 species.
 * **BLAST** — `gramene-blast` is online but its uptime predates the v11 build completing, so it has
-  not picked up this release. Needs the merged registry first, then `ensure_blast.pl` and a restart.
+  not picked up this release. Re-run `ensure_blast.pl` with a registry covering the v11 cores
+  (`node make_reg_pm.js > reg.pm` produces one), then restart it under pm2.
 * **Gene-tree curation UI** (`gramene-genetree-vis`) — point `defaultServerSb` at the v11 swagger.
 * **v10b ebeye moved to port 51010** — check the Apache proxy for it matches.
 
@@ -43,13 +41,36 @@ the alt_id fix below, so revert just that line) and restart `sorghum_ebeye11`.
 
 ---
 
-## 1. Ensembl REST registry merge
+## 1. Ensembl REST — resolved, use the public pansite service
 
-v11's 131 databases need to reach the shared registry at
-`/usr/local/ensembl-87/ensembl-rest/reg.pm`, which serves **91 species across every subsite**. The
-other subsites' entries must survive.
+**Superseded 2026-08-07.** The build now points `ENSEMBL_REST` at
+`https://data.gramene.org/pansite-ensembl-115`, which has been updated and carries **267 species,
+including all 128 of this release's genomes**. Nothing needs merging into the local registry for
+REST's sake.
 
-Tooling is ready and verified, in this repo:
+The measured difference, via `maps/check_maps_in_ensembl_rest.js` against the v11 `maps` collection:
+
+| REST endpoint | genomes unresolved (of 128) |
+| --- | --- |
+| `http://localhost:3000` (the old default) | **91** |
+| `https://data.gramene.org/pansite-ensembl-115` | **0** |
+
+The local instance reads `/usr/local/ensembl-87/ensembl-rest/reg.pm`, which is dated **2024-03-14**
+and knows 151 species. That is why `10_maps` had been reporting genomes as missing from the
+registry — the check was aimed at a stale service, not at a real gap in the data. The check is
+advisory (`|| warn`) and runs *after* `load.js` builds `maps` from MySQL, so no rebuild was needed;
+the warnings were noise.
+
+Note `maps/check_maps_in_ensembl_rest.js` still has a hardcoded fallback default of
+`…/pansite-ensembl-108`. `config.sh` overrides it, so the build is fine, but running that script by
+hand without `BASE_URL` will silently use the older service.
+
+### Registry tooling (still useful for BLAST)
+
+`ensure_blast.pl` needs a Perl registry to enumerate the cores it dumps sequence from. For a
+single-site BLAST the release's own registry is enough — `node make_reg_pm.js > reg.pm`. The merge
+tool is only needed if you must fold a release into a *shared* registry that other subsites also
+read:
 
 * `make_reg_pm.js` — generates the release's own registry from `ensembl_db_info.json`
 * `merge_reg_pm.pl` — merges N registries, later files winning on `(species, group)`
