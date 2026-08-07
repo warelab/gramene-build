@@ -156,17 +156,14 @@ Deliberately **not** committed:
 
 ### `gramene-ebeye`
 
-Two unrelated changes in the tree — commit them separately:
-
-* `src/translateResponseDocument.js` — **a live bug fix, should be committed.** `3743b55` added
-  `alt_id` to `FL`, which is both the Solr field list *and* the list `checkFields` walks to require
-  fields on every doc. `alt_id` is on only 107,226 of 5,407,132 genes, so EBeye threw
-  `Doc <id> missing field alt_id` on ~98% of results. The fix moves the exemptions into an
-  `OPTIONAL_FIELDS` list (`gene_tree`, `synonyms`, `alt_id`). Verified: error log stays at 0 bytes
-  across seven queries spanning sorghum, Arabidopsis and rice, and `alt_id` still exports into
-  `gene_synonym` where present.
-* `app.js` — the `defaultServer` change described above; restore the `https://` value.
+* `app.js` — the `defaultServer` change described above; restore the `https://` value. This is the
+  only outstanding change in this repo.
 * `package-lock.json` — untracked npm churn; ignore.
+
+Fixed and pushed as `e2b5beb`: EBeye was throwing `Doc <id> missing field alt_id` on ~98% of
+results. `3743b55` had added `alt_id` to `FL`, which is both the Solr field list *and* the list
+`checkFields` walks to require fields on every doc, and `alt_id` is on only 107,226 of 5,407,132
+genes. Exemptions now live in an `OPTIONAL_FIELDS` list (`gene_tree`, `synonyms`, `alt_id`).
 
 **Known, unfixed, in the same file:** `genetree: [result.gene_tree] || []` yields `[null]` for the
 ~2.7M genes with no tree, because `[x]` is always truthy so the `|| []` never fires. Should be
