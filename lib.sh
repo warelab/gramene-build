@@ -126,3 +126,41 @@ stage_end() {
   stamp_done "${STAGE_NAME}"
   ok "════════════ STAGE ${STAGE_NAME} complete ════════════"
 }
+
+# ---- incremental-update primitives ------------------------------------------
+# Shared by the incremental (`make add-studies`) path. Nothing here is Atlas-specific: these are
+# the pieces a future incremental genome-addition path should reuse.
+#
+# The design rule they enforce: a stage NEVER silently decides between incremental and full. It
+# validates its preconditions and dies naming the full-rebuild target, because a stage that guessed
+# wrong would ship a partially-updated index with a zero exit code.
+
+# require_populated <collection> <min> <full-target>
+# An incremental update can only add to something that already exists. Refuse otherwise.
+require_populated() {
+  local coll="$1" min="$2" target="$3" n
+  n="$(mongo_count "${coll}")"
+  [ "${n:-0}" -ge "${min}" ] || die "incremental update needs a populated '${coll}' (have ${n:-0}, need >= ${min}) — run '${target}' for a full build first"
+  ok "incremental precondition ok: ${coll} has ${n} docs"
+}
+
+# ledger_add <name> <field>...
+# Append a tab-separated provenance row to .state/<name>.tsv, so what an incremental run added is
+# recoverable later (stamps only record that a stage ran, not what it did).
+ledger_add() {
+  local name="$1"; shift
+  mkdir -p "${STATE_DIR}"
+  printf '%s\t%s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$(printf '%s\t' "$@" | sed 's/\t$//')" >> "${STATE_DIR}/${name}.tsv"
+}
+
+# affected_taxa <accession>...
+# Distinct taxon_ids of the given experiments, space separated. These are the FULL taxon ids from
+# the experiments collection (e.g. 3702); the expression pipeline keys on the same value.
+affected_taxa() {
+  local list
+  list="$(printf '"%s",' "$@" | sed 's/,$//')"
+  mongo_eval "db.experiments.distinct('taxon_id',{_id:{\$in:[${list}]}}).join(' ')"
+}
+
+# csv_to_words <csv>  -> space separated (accepts commas and/or whitespace)
+csv_to_words() { echo "$1" | tr ',' ' ' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }

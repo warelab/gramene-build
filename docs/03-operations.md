@@ -104,6 +104,26 @@ node scripts/sync_saved_search.js --dry-run     # then without --dry-run
 As of 2026-08-05 this reconciles 1,760/1,760 cleanly. The API for creating and reading lists is
 documented in `../gramene-swagger/docs/gene_lists_api.md`.
 
+## Checking for new Expression Atlas studies
+
+```bash
+cd ../gramene-mongodb/atlas
+MONGO_DB=sorghum11 node check_new_atlas_experiments.js          # new RNA-Seq studies for hosted genomes
+MONGO_DB=sorghum11 SINCE=2026 node check_new_atlas_experiments.js
+MONGO_DB=sorghum11 ALL=1 node check_new_atlas_experiments.js    # + species GXA has that we do not host
+```
+
+Read-only: one JSON fetch from GXA diffed against the local `experiments` collection. Defaults to
+**RNA-Seq only** — this pipeline has never loaded microarray, and GXA plants are roughly half
+microarray, so without the filter the report is swamped by ~500 studies nobody wants.
+
+Species matching is by name, falling back to genus. The fallback matters: GXA says `Zea mays` where
+our taxonomy stores the munged display name `Zea maysB73`. Genus-only hits are reported separately
+as near matches for eyeballing rather than silently included or dropped.
+
+To load what it finds, `make add-studies` (see
+[docs/02-build-runbook.md](02-build-runbook.md#adding-a-few-new-atlas-studies-much-cheaper-than-a-refresh)).
+
 ## Backups and blast radius
 
 There is no automated backup of `sorghum11` or the Solr cores — they are reproducible from source by

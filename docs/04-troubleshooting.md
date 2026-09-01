@@ -148,6 +148,28 @@ had no timeout and could wedge the entire stage.
 
 ---
 
+## Incremental updates: two traps
+
+`make add-studies` adds Atlas studies without a full rebuild. Two things about it are easy to get
+wrong, and both were hit while building it.
+
+**`batch.py` resumes by appending.** It counts the lines already in `<short>_attributes.jsonl` and
+appends from there (`batch.py:49,53`), so if a complete file from an earlier run is still on disk it
+writes *nothing* — and stage 58 then reports success and imports stale attributes. Clearing the
+caches (`ref_<taxon>.json`, `inv_<taxon>.json`, `<taxon>.assays_cache.json`) is **not** enough; the
+outputs must go too. The stage's own completeness check cannot catch this, because it compares line
+counts and the line count is unchanged — the gene set is the same, only the values would differ.
+This is the same shape as the stale gene dumps in `40_genes_dump`: well-formed, right size, wrong
+vintage. There is now an invariant asserting each rebuilt JSONL's mtime post-dates the run.
+
+**Do not scope `62_attr_atomic` to one genome.** It looks like an obvious optimisation — the table
+is regenerated in full (247k rows) even when one genome changed, and it is about half the runtime of
+an incremental add. But `solr_atomic_attr.js:122` computes removals as
+`capabilities:"expression_attributes"` over the **entire core**, then strips the capability from
+anything not in the new table. Feed it a single-genome table and it will strip expression from every
+other genome's genes. Scoping is possible, but only if the removals query is scoped by the same
+taxon at the same time.
+
 ## Diagnosing something new
 
 An approach that has worked repeatedly here, in order:
