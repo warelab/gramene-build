@@ -49,6 +49,23 @@ TODO="$(csv_to_words "${TODO}")"
 [ -n "${TODO}" ] || { ok "every requested study is already loaded — nothing to do"; stage_end; exit 0; }
 log "studies to add: ${TODO}"
 
+# ── 2b. can the solr step actually run? check BEFORE doing 20 minutes of work ────────
+# 62_attr_atomic refuses when the genes core has indexed fields that an atomic update cannot
+# reconstruct (see its own guard, and docs/04-troubleshooting.md). Find out now rather than after
+# 55 and 58 have already run, leaving mongo updated and solr not.
+if ! bash "${BUILD_DIR}/stages/62_attr_atomic.sh" --preflight >/dev/null 2>&1; then
+  warn "62_attr_atomic will not be able to patch ${SOLR_GENES_CORE} (schema has fields atomic"
+  warn "updates cannot preserve). The mongo side can still be updated, but getting it into solr"
+  warn "will need a full reload: make refresh-attributes"
+  if [ "${ALLOW_NO_SOLR:-0}" != "1" ]; then
+    die "refusing to update mongo without a way to update solr — re-run with ALLOW_NO_SOLR=1 to proceed anyway (then run 'make refresh-attributes' yourself), or make the offending field stored and reindex"
+  fi
+  warn "ALLOW_NO_SOLR=1 — proceeding; you MUST run 'make refresh-attributes' afterwards"
+  SKIP_SOLR=1
+else
+  SKIP_SOLR=0
+fi
+
 # ── baselines, for the summary at the end ────────────────────────────────────────────
 B_EXP="$(mongo_count experiments)"; B_ASY="$(mongo_count assays)"
 B_XPR="$(mongo_count expression)";  B_ATR="$(mongo_count expression_attributes)"
@@ -70,7 +87,11 @@ case " ${TAXA} " in *" 4577 "*) log "maize affected — running 56_project_maize
 EXPR_ONLY="${TAXA}" bash "${BUILD_DIR}/stages/58_expression_attributes.sh"
 
 # ── 6. patch the genes core in place + rebuild the expr suggestion category ──────────
-bash "${BUILD_DIR}/stages/62_attr_atomic.sh" expression
+if [ "${SKIP_SOLR}" = "0" ]; then
+  bash "${BUILD_DIR}/stages/62_attr_atomic.sh" expression
+else
+  warn "SKIPPED the solr update — run 'make refresh-attributes' to get this into ${SOLR_GENES_CORE}"
+fi
 
 # ── 7. summary ───────────────────────────────────────────────────────────────────────
 log "──────── incremental add complete ────────"

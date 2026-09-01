@@ -170,6 +170,38 @@ anything not in the new table. Feed it a single-genome table and it will strip e
 other genome's genes. Scoping is possible, but only if the removals query is scoped by the same
 taxon at the same time.
 
+---
+
+## Atomic updates erase indexed-but-not-stored fields
+
+**Symptom.** Free-text gene search silently returns nothing for a large subset of genes.
+`_terms:msd2` → 0 hits, while the same query against the previous release's core returns 1.
+
+**Cause.** Solr implements an atomic update by reconstructing the document from its **stored**
+fields and reindexing it. A field that is indexed but neither `stored` nor `docValues`, and is not a
+copyField destination, cannot be reconstructed — it is silently dropped from every document the
+update touches.
+
+`_terms` was exactly that shape (`indexed=true stored=false docValues=false`, no copyField rule,
+written directly by `genes/mongo2solr.js:263`). A single `62_attr_atomic expression` run erased it
+from **247,323 documents**. Nothing failed: the stage reported success, doc counts were unchanged,
+and only search was broken. It would also have propagated into the suggestions core, since
+`suggestions/genes.js:93` builds gene suggestions by faceting on `_terms`.
+
+**Fixed** by making `_terms` `stored="true"` in `genes/conf/managed-schema` and reindexing. Atomic
+updates are safe against it now.
+
+**Guard.** `62_attr_atomic` inspects the live schema before doing anything and refuses if it finds
+any indexed field that is neither stored nor docValues nor a copyField destination, naming the
+offenders. `add_studies` runs the same check as `--preflight` *before* stage 55, so an incremental
+add cannot update mongo and then discover it has no way to update Solr. If you add an indexed field
+to the genes schema, either make it stored or expect this guard to block every `refresh-attr`.
+
+**If it happens again**, the damage is recoverable without a full rebuild as long as the file the
+core was loaded from still exists: `_terms` values derive from names/synonyms/alt_ids, so
+`solr_genes.attribs.json` holds correct values, and an atomic update that *explicitly provides*
+`_terms` restores it losslessly. A full reindex fixes it too, at the cost of core downtime.
+
 ## Diagnosing something new
 
 An approach that has worked repeatedly here, in order:

@@ -13,9 +13,43 @@ cd "$(dirname "$0")/.."
 . ./config.sh
 . ./lib.sh
 ATTR="${1:-}"
+# --preflight: run ONLY the schema safety check and exit with its status, so a caller can find out
+# whether an atomic update is possible before doing expensive work. No logging, no stamp.
+PREFLIGHT=0
+[ "${ATTR}" = "--preflight" ] && { PREFLIGHT=1; ATTR="expression"; }
 case "${ATTR}" in maker|vep|grassius|grassius_homolog|expression|expression_attributes) : ;;
-  *) die "usage: 62_attr_atomic.sh <maker|vep|grassius|expression>";; esac
-stage_begin "62_attr_atomic_${ATTR}"
+  *) die "usage: 62_attr_atomic.sh <maker|vep|grassius|expression> | --preflight";; esac
+[ "${PREFLIGHT}" = "1" ] || stage_begin "62_attr_atomic_${ATTR}"
+
+# ── SAFETY: atomic updates DESTROY indexed-but-not-stored fields ─────────────
+# Solr implements an atomic update by reconstructing the document from its STORED fields and
+# reindexing it. Any field that is indexed but neither stored nor docValues, and is not a
+# copyField destination, cannot be reconstructed and is silently lost for every doc touched.
+#
+# This is not hypothetical: `_terms` (indexed, stored=false, docValues=false, no copyField, written
+# directly by genes/mongo2solr.js) was wiped from 247,323 docs by an expression run, which broke
+# free-text gene search for them -- and would have propagated into the suggestions core, since
+# suggestions/genes.js facets on _terms. It applies to EVERY attr type, not just expression.
+#
+# Refuse rather than damage the core. The real fix is stored=true on the offending field plus a
+# reindex; until then use `make refresh-attributes` (full reload), not this stage.
+log "checking the genes core schema for fields atomic updates cannot preserve"
+UNSAFE="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/schema?wt=json" | "${NODE_BIN}" -e '
+let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+  try{
+    const sc=JSON.parse(s).schema;
+    const dests=new Set((sc.copyFields||[]).map(c=>c.dest));
+    const bad=(sc.fields||[]).filter(f=>f.indexed && !f.stored && !f.docValues && !dests.has(f.name)).map(f=>f.name);
+    console.log(bad.join(" "));
+  }catch(e){console.log("__SCHEMA_UNREADABLE__")}
+})')"
+if [ "${UNSAFE}" = "__SCHEMA_UNREADABLE__" ]; then
+  die "could not read the ${SOLR_GENES_CORE} schema — refusing to apply atomic updates blind"
+elif [ -n "${UNSAFE}" ]; then
+  die "REFUSING to apply atomic updates: ${SOLR_GENES_CORE} has indexed field(s) that are neither stored nor docValues nor copyField destinations, and an atomic update would silently erase them from every doc it touches: ${UNSAFE}. Use 'make refresh-attributes' (full reload) instead, or make those fields stored and reindex. See docs/04-troubleshooting.md."
+fi
+ok "schema is safe for atomic updates (no unreconstructable fields)"
+[ "${PREFLIGHT}" = "1" ] && exit 0
 
 # atomic updates only patch EXISTING docs — the genes core must be fully loaded.
 gdocs="$(solr_numdocs "${SOLR_GENES_CORE}")"; want="$(mongo_count genes)"
