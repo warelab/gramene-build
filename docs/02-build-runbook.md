@@ -55,6 +55,32 @@ Each target invalidates exactly the stamps affected by that kind of change, then
 | new GO/PO/TO/InterPro | `make refresh-ontologies` |
 | new Grassius download | `make refresh-grassius` |
 
+### Adding a few new Atlas studies (much cheaper than a refresh)
+
+A new Expression Atlas study affects **one genome**, so rebuilding everything is the wrong shape —
+a full `make refresh-expression` costs about **3 hours** (55: 19 min, 58: 50 min, 60: 103 min,
+65: 7 min) and drops the Solr genes core. Instead:
+
+```bash
+make add-studies                                        # auto-discover new RNA-Seq studies
+make add-studies ACCESSIONS="E-MTAB-8969,E-MTAB-10280"   # explicit
+FORCE=1 make add-studies ACCESSIONS="E-MTAB-8969"        # re-load one already present
+```
+
+It fetches and upserts just those experiments, rebuilds expression attributes for **only the
+affected genomes**, then patches the genes core **in place** via Solr atomic updates — no drop, no
+downtime — and rebuilds the `expr` suggestion category. Studies already loaded are skipped unless
+`FORCE=1`; each addition is recorded in `.state/atlas_studies.tsv`.
+
+Discover what is available first with
+`MONGO_DB=sorghum11 node ../gramene-mongodb/atlas/check_new_atlas_experiments.js` (see
+[docs/03-operations.md](03-operations.md)).
+
+Use `make refresh-expression` instead for a first build or a wholesale reload.
+
+**A new study barely changes the `expression` document count** — it adds a *field* to existing
+gene documents rather than creating new ones. Judge success by experiment presence, not doc counts.
+
 ### Attribute-only refreshes (much cheaper)
 
 When only an attribute table changed and the decorated genes did not, patch the Solr core **in

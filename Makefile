@@ -28,7 +28,7 @@ SHELL := /bin/bash
 S     := .state
 ST    := stages
 
-.PHONY: all mongo solr index status running clean-stamps \
+.PHONY: all mongo solr index status running clean-stamps add-studies \
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
         refresh-grassius refresh-attributes \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
@@ -45,6 +45,17 @@ ST    := stages
 # that attribute changed (the decorated genes are unchanged). Requires a fully-loaded
 # genes core. Heavier alternative that reloads all 5.2M docs: `make refresh-attributes`.
 #   make refresh-attr ATTR=expression     (or maker | vep | grassius)
+# ── INCREMENTAL addition of Expression Atlas studies ─────────────────────────
+# A new study affects ONE genome, so rebuilding everything is the wrong shape: a full
+# `make refresh-expression` costs ~3h (55:19m 58:50m 60:103m 65:7m) and drops the solr
+# genes core. This adds just those studies and patches the core in place.
+#   make add-studies                                       # auto-discover new RNA-Seq studies
+#   make add-studies ACCESSIONS="E-MTAB-8969,E-MTAB-10280"  # explicit
+#   FORCE=1 make add-studies ACCESSIONS="E-MTAB-8969"       # re-load one already present
+# Use `make refresh-expression` for a first build or a wholesale reload.
+add-studies:
+	bash $(ST)/add_studies.sh $(ACCESSIONS)
+
 refresh-attr:
 	@[ -n "$(ATTR)" ] || { echo "usage: make refresh-attr ATTR=<maker|vep|grassius|expression>"; exit 2; }
 	bash $(ST)/62_attr_atomic.sh $(ATTR)

@@ -103,6 +103,27 @@ Every stage tees to `logs/<stage>.log` and, on success, stamps `.state/<stage>.d
   abort + empty-LUT fallback so a network stall can't hang the whole decorate.
 * Removed the unused `xml-stream` dep (its native `node-expat` broke `npm install`).
 
+## Incremental updates (new Atlas studies)
+
+Stages are full rebuilds by default. Where an update genuinely affects only part of the index,
+there is an explicit incremental entry point — the stages never *guess* which mode is wanted, since
+a wrong guess would ship a partially-updated index with a zero exit code. Each incremental mode
+validates its preconditions and dies naming the full target if they do not hold.
+
+```bash
+make add-studies ACCESSIONS="E-MTAB-8969,E-MTAB-10280"
+```
+
+`55_atlas` (`ATLAS_ADD=`) upserts only those experiments; `58_expression_attributes` (`EXPR_ONLY=`)
+rebuilds only the affected genomes; `62_attr_atomic expression` patches the genes core in place.
+This works because the `expression` collection is keyed on gene id with **one field per
+experiment**, so adding a study is a `$set` — the loaders (`parseData.js`,
+`project_expression_via_lut.js`, `getAtlasData.js`) are upsert-based and idempotent, which also
+means a re-run of the full `55_atlas` is no longer destructive.
+
+Granularity is per genome, not per gene: a new study shifts that genome's reference quantiles
+(`ref_<taxon>.json`), which changes scores for every gene of that genome.
+
 ## Gene attribute capabilities (MAKER / VEP / Grassius)
 
 `60_solr_genes` merges gene-level attribute tables into the solr docs via
