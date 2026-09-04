@@ -62,12 +62,14 @@ LOAD_FILE="solr_genes.json"
 # 3) merge gene-level attribute tables into the solr docs via add_attributes.pl:
 #    - MAKER  : per-genome gene-model AED/QI scores       (${MAKER_TABLE})
 #    - VEP    : germplasm/PTV alleles from the variation DB (${VEP_TABLE})
+#    - rsID   : variant rsIDs overlapping a gene model / flank  (${RSID_TABLE})
 #    - grassius_homolog : Grassius TF families projected onto homologs (this build)
 # MAKER/VEP reuse the prior release's tables by default (same variation DB + gene IDs);
 # grassius_homolog is generated fresh from the decorated genes collection.
 attr_tables=()
 if [ -s "${MAKER_TABLE}" ]; then attr_tables+=("${MAKER_TABLE}"); ok "MAKER table: ${MAKER_TABLE}"; else warn "MAKER table missing (${MAKER_TABLE}) — skipping"; fi
 if [ -s "${VEP_TABLE}" ];   then attr_tables+=("${VEP_TABLE}");   ok "VEP table: ${VEP_TABLE}";   else warn "VEP table missing (${VEP_TABLE}) — skipping"; fi
+if [ -s "${RSID_TABLE}" ];  then attr_tables+=("${RSID_TABLE}");  ok "rsID table: ${RSID_TABLE}";  else warn "rsID table missing (${RSID_TABLE}) — skipping (build it with gramene-solr/rsid_pipeline)"; fi
 
 log "projecting Grassius TF families onto homologs"
 "${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" "${BUILD_DIR}/grassius_homolog_table.js" > grassius_homolog_attrib_table.txt

@@ -162,13 +162,23 @@ counts and the line count is unchanged — the gene set is the same, only the va
 This is the same shape as the stale gene dumps in `40_genes_dump`: well-formed, right size, wrong
 vintage. There is now an invariant asserting each rebuilt JSONL's mtime post-dates the run.
 
-**Do not scope `62_attr_atomic` to one genome.** It looks like an obvious optimisation — the table
-is regenerated in full (247k rows) even when one genome changed, and it is about half the runtime of
-an incremental add. But `solr_atomic_attr.js:122` computes removals as
-`capabilities:"expression_attributes"` over the **entire core**, then strips the capability from
-anything not in the new table. Feed it a single-genome table and it will strip expression from every
-other genome's genes. Scoping is possible, but only if the removals query is scoped by the same
-taxon at the same time.
+**Scoping `62_attr_atomic` to one genome requires scoping the remove pass too.** It looks like an
+obvious optimisation — the table is regenerated in full even when one genome changed. But
+`solr_atomic_attr.js` computes removals as `capabilities:"<token>"` over the **entire core**, then
+strips the capability from anything not in the new table. Feed it a single-genome table unscoped and
+it strips the layer from every other genome's genes.
+
+This is now **supported for rsid** and **guarded for every layer**:
+
+* `REMOVE_SCOPE` narrows the remove pass (`make refresh-rsid-genome GENOME=x` sets
+  `REMOVE_SCOPE=system_name:x` for you).
+* A **shrink guard** aborts any run whose remove pass would clear more than half the genes carrying
+  the token. It was verified against exactly this mistake: an unscoped single-genome rsid run
+  reported it would clear **4,106,661 of 4,106,661** genes (100%) and refused, before writing
+  anything. Override with `ALLOW_SHRINK=1` only when a mass removal is genuinely intended.
+
+`expression` still has no per-genome path — its table is regenerated wholesale — so the warning
+stands there; what changed is that the failure is now caught rather than silently applied.
 
 ---
 
@@ -201,6 +211,63 @@ to the genes schema, either make it stored or expect this guard to block every `
 core was loaded from still exists: `_terms` values derive from names/synonyms/alt_ids, so
 `solr_genes.attribs.json` holds correct values, and an atomic update that *explicitly provides*
 `_terms` restores it losslessly. A full reindex fixes it too, at the cost of core downtime.
+
+## rsID VCFs projected onto the wrong assembly
+
+**Symptom.** None, until something checks the sequence. `build_rsid_table.sh` aborts with
+
+```
+FATAL [sorghum_353]: REF allele disagrees with the CDS sequence for 74.36% of coding SNVs
+```
+
+**Cause.** Two of the 104 projected VCFs (`sorghum_353`, `sorghum_pi154844`) address a *different
+build* of that accession than the cores in this release. Everything superficial about them is
+right — chromosome names `1`–`10`, plausible coordinate ranges, normal variant counts, and every
+position lands inside some gene. Only the underlying sequence differs, so the gene→rsID assignments
+are confidently wrong.
+
+74.36% is the giveaway: a random base disagrees 75% of the time.
+
+**Confirmed two ways that do not depend on the CDS offset arithmetic:** VCF REF vs the *genomic*
+base scores 24.67% / 23.13% for these two against exactly 100.00% for all 102 others (a bimodal
+split, no borderline cases); and `sorghum_353`'s variants run **7.5 Mb past the end of chr10**,
+which no offset or liftover slip can produce.
+
+**Handled** by `RSID_SKIP_GENOMES` in `config.sh` — a visible, documented exclusion rather than a
+silent drop. Clear it once the projection is redone against the assemblies we serve.
+
+**Screen before running**, it takes about two minutes:
+
+```bash
+../gramene-solr/rsid_pipeline/check_vcf_assembly.sh
+```
+
+**The general lesson**, and the reason consequence calling paid for itself immediately: this was
+only detectable because something compared the data against the *reference sequence*. Counts,
+ranges, and names all looked correct. When a new projected dataset arrives, check it against
+sequence, not against plausibility.
+
+## A work dir glob sweeping in excluded genomes
+
+**Symptom.** The rsID table had **4,164,842** rows where the 102 included genomes account for
+**4,106,661**. The 58,181-row surplus was exactly `sorghum_353` (31,830) + `sorghum_pi154844`
+(26,351) — the two genomes that had just been deliberately excluded.
+
+**Cause.** `build_rsid_table.sh` assembled the table with `cat "${TMP}"/*.tsv`. The work dir is
+durable and resumable by design, so it also holds the **partial output a failed genome wrote before
+it aborted**, plus anything left by earlier runs with different parameters. Excluding a genome from
+the *run* did nothing to exclude it from the *glob*.
+
+Nothing downstream could have caught it: the rows are well-formed, the gene ids are unique, and
+`validate_rsid_table.sh` passed on the polluted table because every structural property still held.
+The only signal was the row count failing to reconcile against the sum of the per-genome files.
+
+**Fixed** by concatenating the selected genomes **by name** (`for g in "${GENOMES[@]}"`), never a
+glob, and by deleting a genome's `.tsv` when it fails so no partial file survives.
+
+**The general rule:** in a resumable pipeline, the work dir is not a manifest. Drive the final
+assembly from the list of things you meant to include, and reconcile the output count against that
+list — a glob will faithfully include whatever happens to be lying around.
 
 ## Diagnosing something new
 

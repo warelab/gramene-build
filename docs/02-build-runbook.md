@@ -81,13 +81,32 @@ Use `make refresh-expression` instead for a first build or a wholesale reload.
 **A new study barely changes the `expression` document count** — it adds a *field* to existing
 gene documents rather than creating new ones. Judge success by experiment presence, not doc counts.
 
+### Updating rsIDs for one genome (no merge, no full rebuild)
+
+rsID attributes are strictly per-genome — a gene belongs to exactly one genome — so a re-projected
+VCF only needs that genome re-extracted and re-applied. There is no need to rebuild or merge a
+pan-genome table:
+
+```bash
+cd ../gramene-solr/rsid_pipeline
+./check_vcf_assembly.sh sorghum_353          # FIRST: is the new VCF on our assembly?
+./build_rsid_table.sh sorghum_353            # ~2 min; writes $RSID_WORK_DIR/sorghum_353.tsv
+./run_summary.sh                             # REF% must be 100.00, PTV% in 6-11%
+cd ../../build
+make refresh-rsid-genome GENOME=sorghum_353  # scoped atomic update, no downtime
+```
+
+The per-genome `.tsv` files in `$RSID_WORK_DIR` are the working set for this, not disposable resume
+state. The remove pass is scoped to `system_name:<genome>` automatically; see
+[troubleshooting](04-troubleshooting.md#incremental-updates-two-traps) for why that matters.
+
 ### Attribute-only refreshes (much cheaper)
 
 When only an attribute table changed and the decorated genes did not, patch the Solr core **in
 place** — no drop, no downtime:
 
 ```bash
-make refresh-attr ATTR=maker        # or vep | grassius | expression
+make refresh-attr ATTR=maker        # or vep | rsid | grassius | expression
 ```
 
 The heavier `make refresh-attributes` regenerates the merged attribute JSON and reloads all 5.4M
@@ -128,6 +147,14 @@ Set as environment variables:
 | `SOLR_URL` | `http://localhost:8983/solr` | |
 | `ENSEMBL_REST` | `https://data.gramene.org/pansite-ensembl-115` | public pansite REST; the local `:3000` registry is stale |
 | `MAKER_TABLE` / `VEP_TABLE` | see `config.sh` | attribute table paths |
+| `RSID_VCF_DIR` / `RSID_TABLE` | see `config.sh` | rsID VCFs and the table built from them |
+| `RSID_FLANK_UP` / `RSID_FLANK_DOWN` | 200 / 0 | rsID flank, **upstream only and strand-aware** (below `start` on `+`, above `end` on `-`) |
+| `RSID_MODE` | `cds` | window anchored on the CDS (robust to bad gene models) rather than the gene span |
+| `RSID_CDS_UP` / `RSID_CDS_DOWN` | 1000 / 500 | bp before the start codon / after the stop codon |
+| `RSID_CDS_FASTA_DIR` | `/scratch/olson/fasta` | CDS sequence for PTV/PAV consequence calling |
+| `RSID_INTRON_MAX_DIST` | 10 | intronic variants further than this from a canonical exon are dropped |
+| `RSID_MAX_PER_GENE` / `RSID_JOBS` | 5000 / 4 | per-gene rsID ceiling; genomes extracted in parallel |
+| `RSID_SKIP_GENOMES` | `sorghum_353 sorghum_pi154844` | genomes whose VCF is on a different assembly — see [troubleshooting](04-troubleshooting.md#rsid-vcfs-projected-onto-the-wrong-assembly) |
 | `REBUILD_CORE=1` | — | force-recreate the Solr genes core |
 | `GT_PREFIX` | `SB<version>GT_` | synthetic gene-tree id prefix |
 | `SWAGGER_PORT` / `EBEYE_PORT` | 10000+v / 11000+v | `70_services` |

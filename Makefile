@@ -21,7 +21,7 @@
 #
 # Atomic refresh of ONE post-dump attribute layer — patches the genes core IN PLACE
 # (no drop / no downtime), far lighter than refresh-attributes (which reloads 5.2M docs):
-#   make refresh-attr ATTR=expression   # or: maker | vep | grassius
+#   make refresh-attr ATTR=expression   # or: maker | vep | rsid | grassius
 #   make refresh-expression-attrs / refresh-maker / refresh-vep / refresh-grassius-homolog
 # ─────────────────────────────────────────────────────────────────────────────
 SHELL := /bin/bash
@@ -31,7 +31,7 @@ ST    := stages
 .PHONY: all mongo solr index status running clean-stamps add-studies \
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
         refresh-grassius refresh-attributes \
-        refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
+        refresh-attr refresh-maker refresh-vep refresh-rsid refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
         56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services
@@ -61,6 +61,11 @@ refresh-attr:
 	bash $(ST)/62_attr_atomic.sh $(ATTR)
 refresh-maker:            ; bash $(ST)/62_attr_atomic.sh maker
 refresh-vep:              ; bash $(ST)/62_attr_atomic.sh vep
+refresh-rsid:             ; bash $(ST)/62_attr_atomic.sh rsid
+# one genome only, from its per-genome extractor output: make refresh-rsid-genome GENOME=sorghum_353
+refresh-rsid-genome:
+	@[ -n "$(GENOME)" ] || { echo "usage: make refresh-rsid-genome GENOME=<system_name>"; exit 2; }
+	GENOME=$(GENOME) bash $(ST)/62_attr_atomic.sh rsid
 refresh-grassius-homolog: ; bash $(ST)/62_attr_atomic.sh grassius
 refresh-expression-attrs: ; bash $(ST)/62_attr_atomic.sh expression
 

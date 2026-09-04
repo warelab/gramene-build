@@ -3,7 +3,7 @@
 # Solr ATOMIC updates (no drop / no downtime), then PARTIALLY rebuild any suggestion
 # category that layer feeds. Generic over the attribute type:
 #
-#   attr ∈ { maker | vep | grassius | expression }
+#   attr ∈ { maker | vep | rsid | grassius | expression }
 #
 # All four are add_attributes.pl tables (id + capabilities + *_attr_[sif]s? columns),
 # so the same converter (attr_table_to_atomic.js) + loader (solr_atomic_attr.js) apply.
@@ -17,8 +17,8 @@ ATTR="${1:-}"
 # whether an atomic update is possible before doing expensive work. No logging, no stamp.
 PREFLIGHT=0
 [ "${ATTR}" = "--preflight" ] && { PREFLIGHT=1; ATTR="expression"; }
-case "${ATTR}" in maker|vep|grassius|grassius_homolog|expression|expression_attributes) : ;;
-  *) die "usage: 62_attr_atomic.sh <maker|vep|grassius|expression> | --preflight";; esac
+case "${ATTR}" in maker|vep|rsid|grassius|grassius_homolog|expression|expression_attributes) : ;;
+  *) die "usage: 62_attr_atomic.sh <maker|vep|rsid|grassius|expression> | --preflight";; esac
 [ "${PREFLIGHT}" = "1" ] || stage_begin "62_attr_atomic_${ATTR}"
 
 # ── SAFETY: atomic updates DESTROY indexed-but-not-stored fields ─────────────
@@ -68,6 +68,30 @@ case "${ATTR}" in
   vep)
     [ -s "${VEP_TABLE}" ] || die "VEP table missing: ${VEP_TABLE}"
     cp -f "${VEP_TABLE}" "${TABLE}" ;;
+  rsid)
+    # GENOME=<system_name> patches ONE genome from its per-genome extractor output, without
+    # rebuilding or merging a pan-genome table. rsID attributes are strictly per-genome -- a gene
+    # belongs to exactly one genome -- so nothing is lost by doing them one at a time, and a single
+    # re-projected genome costs ~2 min instead of a full 102-genome rebuild.
+    #
+    # The remove pass MUST be scoped to that genome. Unscoped, it queries capabilities:rsid across
+    # the whole core and clears every gene not in this input -- 4.1M of them. REMOVE_SCOPE limits it,
+    # and solr_atomic_attr.js additionally refuses any run that would clear >50% of the token.
+    if [ -n "${GENOME:-}" ]; then
+      src="${RSID_WORK_DIR}/${GENOME}.tsv"
+      [ -s "${src}" ] || die "no per-genome rsID output for ${GENOME}: ${src} — run rsid_pipeline/build_rsid_table.sh ${GENOME}"
+      "${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
+        'db.maps.countDocuments({system_name:"'"${GENOME}"'"})>0?quit(0):quit(1)' >/dev/null 2>&1 \
+        || die "${GENOME} is not a maps.system_name in ${MONGO_DB}"
+      # per-genome files are headerless; attr_table_to_atomic.js needs the header
+      { printf 'id\tcapabilities\trsid__attr_ss\trsid_PTV__attr_ss\trsid_PAV__attr_ss\n'
+        cat "${src}"; } > "${TABLE}"
+      export REMOVE_SCOPE="system_name:${GENOME}"
+      log "per-genome rsID update: ${GENOME} (remove pass scoped to system_name:${GENOME})"
+    else
+      [ -s "${RSID_TABLE}" ] || die "rsID table missing: ${RSID_TABLE} — build it with gramene-solr/rsid_pipeline/build_rsid_table.sh"
+      cp -f "${RSID_TABLE}" "${TABLE}"
+    fi ;;
   grassius|grassius_homolog)
     log "generating grassius_homolog table from gene trees"
     "${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" "${BUILD_DIR}/grassius_homolog_table.js" > "${TABLE}"
@@ -84,11 +108,17 @@ rows=$(( $(wc -l < "${TABLE}") - 1 ))
 ok "${ATTR} table rows: ${rows}"
 
 # ── genes core: table -> atomic NDJSON -> apply in place ──────────────────────
+# Both halves stream. solr_atomic_attr.js used to slurp the whole NDJSON into one array, which is
+# fine for the ~250k-row layers (MAKER/VEP/expression) but not for rsid: 4.1M docs carrying 459M
+# rsID strings is ~25-40 GB of JS heap on a box whose mongod already holds ~98 GB. It now reads the
+# file twice -- once for ids, once to post -- so peak memory is the id list (~300 MB) plus one
+# batch. The headroom below is generous, not required.
+ATOMIC_HEAP="${ATOMIC_HEAP:---max-old-space-size=8192}"
 "${NODE_BIN}" "${BUILD_DIR}/attr_table_to_atomic.js" < "${TABLE}" > "attr_${ATTR}.ndjson"
 ndj=$(wc -l < "attr_${ATTR}.ndjson")
 [ "${ndj}" -gt 0 ] || die "no atomic docs produced from ${TABLE}"
 log "applying ${ATTR} atomic updates to ${SOLR_GENES_CORE} (${ndj} docs; existence-filtered, set + removals, single commit)"
-"${NODE_BIN}" "${BUILD_DIR}/solr_atomic_attr.js" "${GENES_URL}" "attr_${ATTR}.ndjson"
+"${NODE_BIN}" ${ATOMIC_HEAP} "${BUILD_DIR}/solr_atomic_attr.js" "${GENES_URL}" "attr_${ATTR}.ndjson"
 
 # ── suggestions: PARTIAL rebuild of the category this layer feeds (if any) ────
 if [ -n "${SUGG_CAT}" ]; then

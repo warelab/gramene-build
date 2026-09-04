@@ -147,6 +147,14 @@ re-decorating: `make refresh-attributes`.
   coverage is never lost) with `make refresh-grassius` (regenerates `grassius.tsv`,
   then re-decorates + rebuilds solr). NOTE: the grassius.org download currently has
   *less* sorghum coverage than the curated file, which is why we merge rather than replace.
+* **rsID** — variant rsIDs near a gene's coding sequence (`rsid` capability), so genes can be found
+  by rsID: `rsid__attr_ss` (all), `rsid_PAV__attr_ss` (protein-altering), `rsid_PTV__attr_ss`
+  (protein-truncating), the last two derived from the alt allele's effect on the canonical transcript.
+  Built out of band from per-genome VCFs by `gramene-solr/rsid_pipeline/`. The window is anchored on
+  the CDS (1 kb before the start codon, 500 bp after the stop) rather than the gene model, which some
+  annotations get badly wrong; intronic variants more than 10 nt from an exon are dropped.
+  Refresh everything with `make refresh-rsid`, or one genome with
+  `make refresh-rsid-genome GENOME=<system_name>`.
 * **grassius_homolog** — Grassius TF families projected onto homologs via gene trees
   (`grassius_homolog__attr_ss`), so the 124 pan-genome assemblies (whose gene IDs
   aren't in Grassius) still get a TF-family annotation. Generated fresh each build by
