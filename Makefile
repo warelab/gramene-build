@@ -31,7 +31,7 @@ ST    := stages
 .PHONY: all mongo solr index status running clean-stamps add-studies \
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
         refresh-grassius refresh-attributes \
-        refresh-attr refresh-maker refresh-vep refresh-rsid refresh-grassius-homolog refresh-expression-attrs \
+        refresh-attr refresh-maker refresh-vep refresh-rsid refresh-rsid-suggestions refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
         56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services
@@ -70,6 +70,10 @@ refresh-grassius-homolog: ; bash $(ST)/62_attr_atomic.sh grassius
 refresh-expression-attrs: ; bash $(ST)/62_attr_atomic.sh expression
 
 # default: full index. The genes core now includes expression: 60_solr_genes depends on
+# Rebuild ONLY the "Variants: rsID" suggestion layer (~10M docs), in place. Deliberately NOT part
+# of `make refresh-rsid`: that patches the genes core in minutes, this deletes and re-adds the
+# whole layer in ~1h. `RSID_SUGG=1 make refresh-rsid` does both.
+refresh-rsid-suggestions: ; bash $(ST)/66_rsid_suggestions.sh
 # 58_expression_attributes -> 55_atlas, so `make all` builds the expression collection,
 # the expression_attributes (mongo-native pipeline), and merges them into the solr genes.
 all: $(S)/52_tree_domains.done $(S)/22_germplasm.done $(S)/65_solr_suggestions.done

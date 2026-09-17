@@ -23,7 +23,7 @@ How the pieces fit together. See [README.md](../README.md) for what each individ
                          │
                          ▼
               Solr  sorghum_genes11 (5.4M docs)
-                    sorghum_suggestions11 (7.5M docs)
+                    sorghum_suggestions11 (17.5M docs)
                          │
                          ▼
               gramene-swagger  :50011  (REST API, /sorghum_v11)

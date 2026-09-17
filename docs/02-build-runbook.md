@@ -58,8 +58,8 @@ Each target invalidates exactly the stamps affected by that kind of change, then
 ### Adding a few new Atlas studies (much cheaper than a refresh)
 
 A new Expression Atlas study affects **one genome**, so rebuilding everything is the wrong shape —
-a full `make refresh-expression` costs about **3 hours** (55: 19 min, 58: 50 min, 60: 103 min,
-65: 7 min) and drops the Solr genes core. Instead:
+a full `make refresh-expression` costs about **3.5 hours** (55: 19 min, 58: 50 min, 60: 103 min,
+65: 30-50 min) and drops the Solr genes core. Instead:
 
 ```bash
 make add-studies                                        # auto-discover new RNA-Seq studies
@@ -154,7 +154,10 @@ Set as environment variables:
 | `RSID_CDS_FASTA_DIR` | `/scratch/olson/fasta` | CDS sequence for PTV/PAV consequence calling |
 | `RSID_INTRON_MAX_DIST` | 10 | intronic variants further than this from a canonical exon are dropped |
 | `RSID_MAX_PER_GENE` / `RSID_JOBS` | 5000 / 4 | per-gene rsID ceiling; genomes extracted in parallel |
-| `RSID_SKIP_GENOMES` | `sorghum_353 sorghum_pi154844` | genomes whose VCF is on a different assembly — see [troubleshooting](04-troubleshooting.md#rsid-vcfs-projected-onto-the-wrong-assembly) |
+| `RSID_SKIP_GENOMES` | `sorghum_pi154844` | genomes whose VCF is on a different assembly — see [troubleshooting](04-troubleshooting.md#rsid-vcfs-projected-onto-the-wrong-assembly). `sorghum_353` was on this list until it was re-projected on 2026-09-04 |
+| `RSID_SUGG_JSON` / `RSID_SUGG_TMP` | `/scratch/olson/rsid_projection/…` | generated rsID suggestion docs, and the sort scratch that builds them |
+| `SKIP_RSID=1` / `REGEN_RSID=1` | off | skip the rsID suggestion layer in `65`; force it to regenerate |
+| `RSID_SUGG=1` | off | make `62_attr_atomic.sh rsid` also rebuild the rsID suggestion layer (adds ~1 h) |
 | `REBUILD_CORE=1` | — | force-recreate the Solr genes core |
 | `GT_PREFIX` | `SB<version>GT_` | synthetic gene-tree id prefix |
 | `SWAGGER_PORT` / `EBEYE_PORT` | 10000+v / 11000+v | `70_services` |

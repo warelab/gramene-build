@@ -82,6 +82,50 @@ for f in GO PO TO QTL_TO qtls taxonomy domains pathways TF expr; do
   fi
 done
 
+# ---- rsID layer -------------------------------------------------------------
+# One suggestion per distinct rsID (~10M), so users can search genes by variant id.
+#
+# Two things make this layer unlike the others:
+#  * It is NOT faceted from the genes core. rsid__attr_ss has ~10M distinct terms over ~460M
+#    values; facet.pivot on it would materialize that term space in the 8 GB heap this Solr
+#    shares across 90 cores. build_rsid_suggestions.sh reads the per-genome extractor output
+#    instead (sort/merge on /scratch, no Solr involvement).
+#  * Its staleness key is the STAGE 62 stamp, not ${GENES_STAMP}. rsID data reaches the genes
+#    core through 62_attr_atomic.sh rsid, so a stage-60 rebuild neither invalidates nor
+#    refreshes it, and the stale_vs_genes() check above would never fire for it.
+# Generation is cached; the LOAD happens on every full run because this stage recreates the core.
+RSID_JSON="${RSID_SUGG_JSON:-/scratch/olson/rsid_projection/rsid_suggestions.jsonl}"
+RSID_STAMP="${STATE_DIR}/62_attr_atomic_rsid.done"
+rsid_stale() {   # true when the jsonl is missing or older than its inputs
+  [ -s "${RSID_JSON}" ] || return 0
+  [ -f "${RSID_STAMP}" ] && [ "${RSID_STAMP}" -nt "${RSID_JSON}" ] && return 0
+  local newest; newest="$(ls -t "${RSID_WORK_DIR}"/*.tsv 2>/dev/null | head -1)"
+  [ -n "${newest}" ] && [ "${newest}" -nt "${RSID_JSON}" ] && return 0
+  return 1
+}
+if [ "${SKIP_RSID:-0}" = "1" ]; then
+  warn "SKIP_RSID=1 — no rsID suggestions in this build"
+else
+  if [ "${REGEN_RSID:-0}" = "1" ] || rsid_stale; then
+    log "generating rsID suggestions (build_rsid_suggestions.sh; 20-30 min)"
+    bash "${SUGG}/build_rsid_suggestions.sh" "${RSID_JSON}"
+  else
+    log "reusing existing rsID suggestions ${RSID_JSON} ($(wc -l < "${RSID_JSON}") docs)"
+  fi
+  [ -s "${RSID_JSON}" ] || die "rsID suggestion file missing/empty: ${RSID_JSON}"
+  avail=$(df --output=avail -BG /solr | tail -1 | tr -dc 0-9)
+  [ "${avail:-0}" -ge 40 ] || die "/solr has only ${avail} GB free — the rsID layer needs ~18 GB plus merge headroom"
+  rsid_want=$(wc -l < "${RSID_JSON}")
+  log "loading ${rsid_want} rsID suggestions (batch 5000; ~20-40 min)"
+  # SKIP_DOCS=0 is safe *here* because the core was just recreated empty; see 66_rsid_suggestions.sh
+  # for why the loader's own whole-core resume heuristic must not be trusted for a second file.
+  SKIP_DOCS=0 SOLR_COMMIT_EVERY=100 solr_load_json_chunked "${SOLR_SUGG_CORE}" "${RSID_JSON}" 5000
+  rsid_got="$(curl -s -G "${SOLR_URL}/${SOLR_SUGG_CORE}/select" --data-urlencode 'q=category:"Variants: rsID"' \
+              --data-urlencode rows=0 --data-urlencode wt=json | grep -o '"numFound":[0-9]*' | head -1 | cut -d: -f2)"
+  [ "${rsid_got:-0}" = "${rsid_want}" ] || die "rsID suggestions: ${rsid_got} loaded but ${rsid_want} generated"
+  ok "rsID suggestion layer complete (${rsid_got} docs)"
+fi
+
 # Completeness gate: gene-level suggestions dominate (prior release had ~7M docs),
 # so a tiny count means genes.json didn't load. Floor at the gene count.
 sdocs="$(solr_numdocs "${SOLR_SUGG_CORE}")"

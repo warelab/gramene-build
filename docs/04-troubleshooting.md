@@ -220,21 +220,30 @@ core was loaded from still exists: `_terms` values derive from names/synonyms/al
 FATAL [sorghum_353]: REF allele disagrees with the CDS sequence for 74.36% of coding SNVs
 ```
 
-**Cause.** Two of the 104 projected VCFs (`sorghum_353`, `sorghum_pi154844`) address a *different
-build* of that accession than the cores in this release. Everything superficial about them is
-right — chromosome names `1`–`10`, plausible coordinate ranges, normal variant counts, and every
-position lands inside some gene. Only the underlying sequence differs, so the gene→rsID assignments
-are confidently wrong.
+**Cause.** The projected VCF addresses a *different build* of that accession than the cores in this
+release. Everything superficial about it is right — chromosome names `1`–`10`, plausible coordinate
+ranges, normal variant counts, and every position lands inside some gene. Only the underlying
+sequence differs, so the gene→rsID assignments are confidently wrong.
 
 74.36% is the giveaway: a random base disagrees 75% of the time.
 
 **Confirmed two ways that do not depend on the CDS offset arithmetic:** VCF REF vs the *genomic*
-base scores 24.67% / 23.13% for these two against exactly 100.00% for all 102 others (a bimodal
-split, no borderline cases); and `sorghum_353`'s variants run **7.5 Mb past the end of chr10**,
-which no offset or liftover slip can produce.
+base scored 24.67% / 23.13% for the two affected genomes against exactly 100.00% for all 102 others
+(a bimodal split, no borderline cases); and `sorghum_353`'s variants ran **7.5 Mb past the end of
+chr10**, which no offset or liftover slip can produce.
 
 **Handled** by `RSID_SKIP_GENOMES` in `config.sh` — a visible, documented exclusion rather than a
 silent drop. Clear it once the projection is redone against the assemblies we serve.
+
+**Current status.** `sorghum_353` was re-projected and re-added on 2026-09-04 and now scores
+`883585/883585 agree (0.0000% mismatch)`; it is indexed. Only **`sorghum_pi154844`** is still
+excluded, so `RSID_SKIP_GENOMES` names one genome, not two.
+
+**The aborted run leaves a partial file behind, and it is not marked.** `sorghum_pi154844.tsv`
+(26,351 rows) is still in `RSID_WORK_DIR` and is the only one of the 104 `.tsv` files with **no
+`.ok` marker** — the marker is written on success, so `.ok` is what distinguishes a complete
+extraction from the wreckage of a failed one. Any consumer that globs `*.tsv` silently inherits the
+bad data. Key off the `.ok` markers, or off `RSID_SKIP_GENOMES`, never off the glob alone.
 
 **Screen before running**, it takes about two minutes:
 

@@ -91,7 +91,15 @@ case "${ATTR}" in
     else
       [ -s "${RSID_TABLE}" ] || die "rsID table missing: ${RSID_TABLE} — build it with gramene-solr/rsid_pipeline/build_rsid_table.sh"
       cp -f "${RSID_TABLE}" "${TABLE}"
-    fi ;;
+    fi
+    # The "Variants: rsID" suggestion layer is NOT refreshed by default. This stage's contract is a
+    # lightweight in-place patch of the genes core; rebuilding that layer means deleting and
+    # re-adding ~10M suggestion docs (40-70 min), a different class of operation. Opt in with
+    # RSID_SUGG=1, or run `make refresh-rsid-suggestions`.
+    # GENOME=<x> makes it doubly wrong to do implicitly: a single-genome patch still requires a
+    # PAN-GENOME regenerate, because every rsID doc carries per-genome counts for all genomes, so
+    # one genome's change perturbs millions of docs.
+    if [ "${RSID_SUGG:-0}" = "1" ]; then SUGG_CAT="rsid"; fi ;;
   grassius|grassius_homolog)
     log "generating grassius_homolog table from gene trees"
     "${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" "${BUILD_DIR}/grassius_homolog_table.js" > "${TABLE}"
@@ -121,7 +129,11 @@ log "applying ${ATTR} atomic updates to ${SOLR_GENES_CORE} (${ndj} docs; existen
 "${NODE_BIN}" ${ATOMIC_HEAP} "${BUILD_DIR}/solr_atomic_attr.js" "${GENES_URL}" "attr_${ATTR}.ndjson"
 
 # ── suggestions: PARTIAL rebuild of the category this layer feeds (if any) ────
-if [ -n "${SUGG_CAT}" ]; then
+if [ "${SUGG_CAT}" = "rsid" ]; then
+  # Delegated: the rsID layer is file-generated, not faceted, and is a full-layer rewrite.
+  log "rebuilding the rsID suggestion layer (RSID_SUGG=1) — this takes 40-70 min"
+  bash "${BUILD_DIR}/stages/66_rsid_suggestions.sh"
+elif [ -n "${SUGG_CAT}" ]; then
   SUGG="${SOLR_REPO}/suggestions"; cd "${SUGG}"
   before="$(curl -s "${SOLR_URL}/${SOLR_SUGG_CORE}/select?q=${SUGG_DELQ}&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
   log "partial suggestions: deleting ${before:-0} old ${SUGG_CAT} docs (${SUGG_DELQ}); regenerating from the updated genes core"

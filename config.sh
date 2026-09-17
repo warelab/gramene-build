@@ -102,11 +102,14 @@ export RSID_NC_UP="${RSID_NC_UP:-200}"           # non-coding genes: bp before t
 export RSID_CDS_FASTA_DIR="${RSID_CDS_FASTA_DIR:-/scratch/olson/fasta}"
 # Genomes excluded from the rsID table because their projected VCF is on a DIFFERENT ASSEMBLY than
 # the gene models in this release. Verified with rsid_pipeline/check_vcf_assembly.sh, which compares
-# the VCF REF allele to the genomic base: 102 of 104 genomes score exactly 100.00%, these two score
-# 24.67% and 23.13% -- chance. sorghum_353's variants also run 7.5 Mb past the end of chr10, so no
-# coordinate offset can reconcile them. Left in, they would produce confident, wrong gene->rsID
-# assignments (a variant always lands inside *some* gene) and meaningless consequence calls. Clear
-# this once the projection is redone against the assemblies we actually serve.
+# the VCF REF allele to the genomic base: the good genomes score exactly 100.00%, the bad ones
+# 24.67% and 23.13% -- chance. Left in, they produce confident, wrong gene->rsID assignments (a
+# variant always lands inside *some* gene) and meaningless consequence calls.
+# sorghum_353 was on this list until it was re-projected and re-added on 2026-09-04; it now scores
+# 883585/883585 agree (0.0000% mismatch). Only sorghum_pi154844 remains -- clear it once that
+# projection is redone against the assembly we actually serve.
+# NB its aborted run left a partial sorghum_pi154844.tsv (26,351 rows) in RSID_WORK_DIR with no .ok
+# marker. Consumers must key off the .ok markers or this list, never off a bare *.tsv glob.
 export RSID_SKIP_GENOMES="${RSID_SKIP_GENOMES:-sorghum_pi154844}"
 
 # --- services ----------------------------------------------------------------
