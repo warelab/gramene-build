@@ -202,6 +202,67 @@ core was loaded from still exists: `_terms` values derive from names/synonyms/al
 `solr_genes.attribs.json` holds correct values, and an atomic update that *explicitly provides*
 `_terms` restores it losslessly. A full reindex fixes it too, at the cost of core downtime.
 
+## A work dir glob sweeping in excluded genomes
+
+**Symptom.** The rsID table had **4,164,842** rows where the 102 included genomes account for
+**4,106,661**. The 58,181-row surplus was exactly `sorghum_353` (31,830) + `sorghum_pi154844`
+(26,351) — the two genomes that had just been deliberately excluded.
+
+**Cause.** `build_rsid_table.sh` assembled the table with `cat "${TMP}"/*.tsv`. The work dir is
+durable and resumable by design, so it also holds the **partial output a failed genome wrote before
+it aborted**, plus anything left by earlier runs with different parameters. Excluding a genome from
+the *run* did nothing to exclude it from the *glob*.
+
+Nothing downstream could have caught it: the rows are well-formed, the gene ids are unique, and
+`validate_rsid_table.sh` passed on the polluted table because every structural property still held.
+The only signal was the row count failing to reconcile against the sum of the per-genome files.
+
+**Fixed** by concatenating the selected genomes **by name** (`for g in "${GENOMES[@]}"`), never a
+glob, and by deleting a genome's `.tsv` when it fails so no partial file survives.
+
+**The general rule:** in a resumable pipeline, the work dir is not a manifest. Drive the final
+assembly from the list of things you meant to include, and reconcile the output count against that
+list — a glob will faithfully include whatever happens to be lying around.
+
+## Maize has no pathways (capabilities:pathways returns zero maize genes)
+
+**Symptom.** `q=*:* AND ((capabilities:pathways))` returns pathway genes for every species except
+maize. `sorghum_genes10` had 1,518 maize pathway genes; `10b` and `11` had none.
+
+**Cause.** Plant Reactome files maize **twice**: `Zea mays` (taxId 4577, prefix **ZMA**) and
+`Zea mays ver5` (taxId 381124, prefix **ZMY**). The two inputs `get_pathways.js` reads disagree:
+
+| input | maize content |
+|---|---|
+| `gene_ids_by_pathway_and_species.tab` | B73 **v5** ids (`Zm00001eb…`), prefix ZMY |
+| `Ensembl2PlantReactomeReactions.txt` (public) | **v4** ids only (`Zm00001d…`), prefix ZMA |
+
+`get_pathways.js` creates one skeleton per gene from the `.tab` and fills `ancestors`/`entries`
+from the reactions file. Our cores carry only v5 genes, so every maize gene got a skeleton that
+nothing ever filled — `annotations.pathways = {}` on 1,587 genes. `mongo2solr.join.js` emits a
+`<field>__ancestors` + capability only `if (ancestors || entries)`, so it correctly skipped them:
+**the conversion was right and the data was empty.** The `speciesCode ZMY not in taxonLUT` line in
+the stage log is a symptom of the same split, not the cause — the code self-heals that lookup.
+
+**Fix.** `Ensembl2PlantReactomeReactions_Zmy_ver5.txt` (in `gramene-mongodb/reactome/`) supplies
+the missing ZMY reaction rows. `25_reactome.sh` appends it to the downloaded reactions file before
+`get_pathways.js` runs. It is **not published upstream** — its download URL 301s to the Plant
+Reactome home page — so it is carried in-repo. It came from the release69/v10 build, which is why
+v10 had maize pathways and v11 did not.
+
+**Coverage.** It covers 1,518 genes; 157 of the 1,587 skeletons have no data in any artifact and
+stay empty. That matches v10, which also had 1,518.
+
+**Verify** after a rebuild:
+
+```bash
+curl -s '.../sorghum_genes11/select?q=capabilities:pathways+AND+system_name:zea_maysb73&rows=0'
+# expect ~1518, not 0
+```
+
+Note the suggestion category `Plant Reactome: Pathway` is faceted from the genes core, so it must
+be regenerated after this is fixed or its per-genome counts will still omit maize.
+
 ## Diagnosing something new
 
 An approach that has worked repeatedly here, in order:
