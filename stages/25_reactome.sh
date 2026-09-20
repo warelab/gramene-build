@@ -27,6 +27,26 @@ curl -fsSL "${PR}/Ensembl2PlantReactomeReactions.txt"        -o Ensembl2PlantRea
 assert_nonempty_file Ensembl2PlantReactomeReactions.txt
 assert_nonempty_file gene_ids_by_pathway_and_species.tab
 
+# ---- maize ver5 (ZMY) supplement -------------------------------------------
+# Plant Reactome files maize TWICE: "Zea mays" (taxId 4577, prefix ZMA) and "Zea mays ver5"
+# (taxId 381124, prefix ZMY). The public Ensembl2PlantReactomeReactions.txt carries ONLY the v4
+# ZMA mappings (Zm00001d ids, which this release does not have -- our cores are B73 v5), while
+# gene_ids_by_pathway_and_species.tab DOES list v5 ZMY genes (Zm00001eb). get_pathways.js builds
+# a skeleton per gene from the .tab and fills ancestors/entries from the reactions file, so every
+# v5 maize gene came out with an empty {} -- 1,587 genes with no pathways in the v11 build, and
+# zero maize hits for capabilities:pathways.
+# This supplement is NOT published upstream (its download URL 301s to the Plant Reactome home
+# page); it is a local artifact carried over from the release69/v10 build, which is why v10 has
+# maize pathways and v11 did not. Appending it after the download keeps this idempotent -- curl
+# above overwrites the base file on every run.
+ZMY_SUPP="${R}/Ensembl2PlantReactomeReactions_Zmy_ver5.txt"
+if [ -s "${ZMY_SUPP}" ]; then
+  cat "${ZMY_SUPP}" >> Ensembl2PlantReactomeReactions.txt
+  ok "appended $(wc -l < "${ZMY_SUPP}") maize ver5 (ZMY) reaction lines"
+else
+  warn "missing ${ZMY_SUPP} — maize v5 genes will get EMPTY pathways (see docs/04-troubleshooting.md)"
+fi
+
 # 1) reactome species prefixes from the anchor genomes
 log "deriving reactome species prefixes"
 "${NODE_BIN}" get_species_prefixes.js > merge_into_taxonomy.json
