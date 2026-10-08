@@ -12,17 +12,35 @@
 // (not silently dropped) so coverage regressions are visible.
 //
 // Output (stdout):  <current_gene_id>\t<protein_name>\t<family>   (grassius.tsv format)
-// Usage: MONGO_URI=... MONGO_DB=sorghum11 node fetch_grassius.js [Species:system_name ...]
-//   default species: Sorghum:sorghum_bicolor Maize:zea_maysb73 Oryza:oryza_sativa
+// Usage: MONGO_URI=... MONGO_DB=search70 node fetch_grassius.js [Species:system_name ...]
+//   default species: Sorghum:sorghum_bicolor Maize:zea_mays Oryza:oryza_sativa
+// NB this stage is NOT part of `make all` -- the checked-in search/grassius.tsv is what the
+// decorate stage reads. Run it only to refresh that file, and check the coverage report:
+// GRASSIUS maize IDs are v3 (GRMZM*)/v4 (Zm00001d*) while this release's zea_mays is v5
+// (Zm00001eb*), and the v70 dumps carry very few legacy synonyms, so maize coverage from
+// source will be near zero. grassius_homolog (stage 60) is the path that actually covers maize.
 'use strict';
-const MONGO_LIB = '/usr/local/gramene/subsites/sorghum/v11/gramene-mongodb/node_modules/mongodb';
+// Resolve the driver from THIS release's checkout, not a hardcoded sibling tree: build/ and
+// gramene-mongodb/ are siblings under the release root. The old absolute path pointed into
+// subsites/sorghum/v11 and would have run the main release against the sorghum driver.
+const path = require('path');
+const MONGO_LIB = process.env.MONGO_LIB
+  || path.resolve(__dirname, '..', 'gramene-mongodb', 'node_modules', 'mongodb');
 const { MongoClient } = require(MONGO_LIB);
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017';
-const MONGO_DB = process.env.MONGO_DB || 'sorghum11';
+// Default from collections.js -- the single source of truth for db name + version. A literal
+// default here is actively dangerous: this script only READS, so pointing at the wrong
+// database yields a plausible grassius.tsv keyed to another release's gene IDs.
+const MONGO_DB = process.env.MONGO_DB || (() => {
+  try { return require(path.resolve(__dirname, '..', 'gramene-mongodb-config', 'collections.js'))
+               .getMongoConfig().db; }
+  catch (e) { console.error('MONGO_DB is unset and collections.js would not load: ' + e.message);
+              process.exit(3); }
+})();
 const BASE = 'https://grassius.org/download_species_gene_list';
 const specs = (process.argv.slice(2).length ? process.argv.slice(2)
-              : ['Sorghum:sorghum_bicolor', 'Maize:zea_maysb73', 'Oryza:oryza_sativa'])
+              : ['Sorghum:sorghum_bicolor', 'Maize:zea_mays', 'Oryza:oryza_sativa'])
               .map(s => { const [g, sn] = s.split(':'); return { grassius: g, system_name: sn }; });
 
 const stripTx = id => id.replace(/\.\d+$/, '');   // drop transcript suffix Sb01g014370.1 -> Sb01g014370

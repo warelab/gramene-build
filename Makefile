@@ -64,10 +64,23 @@ refresh-vep:              ; bash $(ST)/62_attr_atomic.sh vep
 refresh-grassius-homolog: ; bash $(ST)/62_attr_atomic.sh grassius
 refresh-expression-attrs: ; bash $(ST)/62_attr_atomic.sh expression
 
+# Re-apply user gene-list saved_search tags after a FULL reindex of the genes core. They are
+# written post-load by the API, so a core rebuild drops them; additive + idempotent, safe to re-run.
+# Main release: lists live in the shared userData1 only -- the per-site sorghum dbs are a
+# SorghumBase thing and must not be read here. Run with DRY=1 first.
+restore-saved-search:
+	@. ./config.sh; cd ../gramene-solr && \
+	  MONGO_URL="$${SAVED_SEARCH_MONGO_URL:-mongodb://localhost:27017/userData1}" \
+	  SOURCE="$${SOLR_URL}/$${PREV_LIVE_GENES_CORE}" TARGET="$${SOLR_URL}/$${SOLR_GENES_CORE}" \
+	  node scripts/sync_saved_search.js $(if $(DRY),--dry-run,)
+
 # default: full index. The genes core now includes expression: 60_solr_genes depends on
 # 58_expression_attributes -> 55_atlas, so `make all` builds the expression collection,
 # the expression_attributes (mongo-native pipeline), and merges them into the solr genes.
-all: $(S)/52_tree_domains.done $(S)/22_germplasm.done $(S)/65_solr_suggestions.done
+# 22_germplasm is deliberately NOT a prerequisite: the main release ships without germplasm
+# (as r69 effectively does) and its source is not available, so requiring it would only
+# fail the build. The 22_germplasm target is kept for a one-off run if a source appears.
+all: $(S)/52_tree_domains.done $(S)/65_solr_suggestions.done
 	@echo "BUILD COMPLETE — mongo + solr genes + suggestions ready"
 
 mongo: $(S)/52_tree_domains.done

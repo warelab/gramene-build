@@ -47,6 +47,11 @@ export SOLR_GENES_CORE="genes${DB_VERSION}"                    # genes70
 export SOLR_SUGG_CORE="suggestions${DB_VERSION}"              # suggestions70
 export PREV_GENES_CORE="genes$((DB_VERSION-1))"               # genes69 (conf template + diffs)
 export PREV_SUGG_CORE="suggestions$((DB_VERSION-1))"
+# The core the LIVE r69 site serves, and so the source of saved_search tags for
+# `make restore-saved-search`. NB this is a core NAME, not a directory: the core named
+# genes69 has instanceDir /solr/data/genes69c, while the directory literally called
+# genes69 is a disposable copy. Always address it by name.
+export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-genes69}"
 
 # --- solr gene attribute tables -- main release has NO sorghum MAKER/VEP; leave empty
 # (stage 60 warns + skips a missing table). grassius_homolog still projects fresh.
@@ -56,7 +61,11 @@ export VEP_TABLE="${VEP_TABLE:-}"
 # --- services ----------------------------------------------------------------
 export SOLR_URL="${SOLR_URL:-http://localhost:8983/solr}"
 export SOLR_DATA_DIR="${SOLR_DATA_DIR:-/solr/data}"
-export ENSEMBL_REST="${ENSEMBL_REST:-http://localhost:3000}"
+# Measured against search70.maps' 267 genomes: localhost:3000 resolves 17, the SorghumBase
+# pan-site panel (pansite-ensembl-115) resolves 18, and the public plants REST resolves
+# ALL 267. v11 moved to the pan-site because that IS its gene set; for the main release it
+# would leave ~250 genomes unverified, which is what 10_maps.log already shows.
+export ENSEMBL_REST="${ENSEMBL_REST:-https://rest.ensembl.org}"
 export REDIS_HOST="${REDIS_HOST:-localhost}"
 export REDIS_PORT="${REDIS_PORT:-6379}"
 export REDIS_HOMOLOG_DB=9
