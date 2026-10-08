@@ -13,7 +13,9 @@ stage_begin 70_services
 
 SWAGGER_PORT="${SWAGGER_PORT:-$((10000+DB_VERSION))}"
 EBEYE_PORT="${EBEYE_PORT:-$((11000+DB_VERSION))}"
-BASEPATH="/${SPECIES}_v${DB_VERSION}"
+# The MAIN release serves a bare /v<N> (r69 serves /v69); only the species subsites use a
+# <species>_v<N> prefix. Getting this wrong points Apache at a path swagger never answers.
+BASEPATH="/v${DB_VERSION}"
 SWAGGER_URL_LOCAL="http://localhost:${SWAGGER_PORT}${BASEPATH}/swagger"
 
 log "swagger basePath=${BASEPATH} port=${SWAGGER_PORT}; ebeye port=${EBEYE_PORT}"
@@ -21,14 +23,25 @@ log "swagger basePath=${BASEPATH} port=${SWAGGER_PORT}; ebeye port=${EBEYE_PORT}
 # ---- gramene-swagger edits (idempotent perl -pi) ----
 SY="${SWAGGER_REPO}/api/swagger/swagger.yaml"
 perl -pi -e "s{^basePath:.*}{basePath: ${BASEPATH}};" "${SY}"
-perl -pi -e "s{^  title:.*}{  title: API for ${SPECIES}base release ${DB_VERSION}};" "${SY}"
+# r69's title is "API for gramene release 69" -- SPECIES is already "gramene" here, so the
+# subsite's "${SPECIES}base" would read "gramenebase".
+perl -pi -e "s{^  title:.*}{  title: API for ${SPECIES} release ${DB_VERSION}};" "${SY}"
 ok "swagger.yaml basePath -> ${BASEPATH}"
 
 # point solr.js at the live solr host (was hardcoded squam)
 SJ="${SWAGGER_REPO}/api/helpers/solr.js"
 solr_host="$(echo "${SOLR_URL}" | sed -E 's#https?://##; s#/solr.*##')"
-perl -pi -e "s{var urlBase = 'https?://[^/]+/solr/${SPECIES}_';}{var urlBase = '${SOLR_URL}/${SPECIES}_';}" "${SJ}"
-grep -q "${SOLR_URL}/${SPECIES}_" "${SJ}" && ok "solr.js urlBase -> ${SOLR_URL}/${SPECIES}_" || warn "solr.js urlBase not updated — check ${SJ} manually"
+# Main-release cores are BARE (genes70/suggestions70); only subsites prefix them
+# (sorghum_genes11). solr.js builds `${urlBase}genes${version}`, so urlBase must end at
+# /solr/. The old pattern required the existing value to already read /solr/${SPECIES}_ --
+# after the sorghum_v11 merge it reads /solr/sorghum_, so it matched nothing, warned, and
+# would have left the API querying a core named sorghum_genes70 that does not exist.
+perl -pi -e "s{var urlBase = '[^']*';}{var urlBase = '${SOLR_URL}/';}" "${SJ}"
+want_core="${SOLR_URL}/${SOLR_GENES_CORE}"
+got_core="$(cd "${SWAGGER_REPO}" && "${NODE_BIN}" -e 'process.stdout.write(require("./api/helpers/solr.js").genesURL)' 2>/dev/null)"
+[ "${got_core}" = "${want_core}" ] \
+  && ok "solr.js genesURL -> ${got_core}" \
+  || die "solr.js genesURL is '${got_core}', expected '${want_core}' — check ${SJ}"
 
 # swagger port. Both `var port = 5010;` and `var port = process.env.PORT || 5010;` occur in the
 # wild — the older pattern only matched the first, silently left the port untouched, and still
@@ -63,10 +76,10 @@ cat >&2 <<EOF
  MANUAL DEPLOYMENT CHECKLIST (infra steps the build cannot safely automate)
 ──────────────────────────────────────────────────────────────────────────────
  1. Apache reverse proxy (gorgonzola: conf/extra/httpd-ssl.conf, under
-    data.${SPECIES}base.org):  ${BASEPATH} -> $(hostname):${SWAGGER_PORT}
+    data.${SPECIES}.org):  ${BASEPATH} -> $(hostname):${SWAGGER_PORT}
     then: apachectl configtest && apachectl graceful
  2. Open firewall to ${SWAGGER_PORT} (swagger) and ${EBEYE_PORT} (ebeye).
- 3. Ensembl REST (${ENSEMBL_REST}): add the new sorghum11 cores/compara/variation
+ 3. Ensembl REST (${ENSEMBL_REST}): add this release's ${EXPECT_CORES} cores + compara
     to the registry (reg.pm) and restart so the genome browser + maps QC resolve
     every genome (preflight/maps flagged genomes missing from the registry).
  4. BLAST: re-run ensure_blast.pl with the updated registry --out_dir the blast
