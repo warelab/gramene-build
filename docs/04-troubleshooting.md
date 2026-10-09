@@ -18,8 +18,8 @@ alive, CPU is idle, nothing is logged, and it never returns.
 (heap exhaustion, an unbounded `xrefsToProcess` array, LMDB memory behaviour). All wrong.
 
 **Actual cause:** the gene dumps embed `taxon_id`, and the synthetic per-genome taxon ids are
-*reassigned* whenever the genome set changes. 78 of the 128 dumps were left over from an earlier run
-with different taxon ids. Decorate looked up a taxon that no longer existed in `maps` and wedged.
+*reassigned* whenever the genome set changes. 78 of the subsite's 128 dumps were left over from an
+earlier run with different taxon ids. Decorate looked up a taxon that no longer existed in `maps` and wedged.
 
 The dump stage's resume logic compared **line counts** — which were identical — so it saw nothing
 wrong and skipped re-dumping.
@@ -30,7 +30,7 @@ every dump's `taxon_id` must equal `maps.taxon_id` for that genome.
 **If it stalls anyway:** compare the last gene written to Mongo against the next gene in the dump.
 
 ```bash
-mongosh --quiet sorghum11 --eval 'db.genes.find().sort({$natural:-1}).limit(1).toArray()'
+mongosh --quiet search70 --eval 'db.genes.find().sort({$natural:-1}).limit(1).toArray()'
 # then find that gene's neighbour in ../gramene-mongodb/search/tmp/<genome>.json.gz
 ```
 
@@ -93,16 +93,19 @@ producing 3 phantom genomes and **169,944 spurious genes**.
 run. Verify by cross-checking gene stable ids against compara's `gene_member` table — do not assume
 the higher-numbered database is the right one. It often isn't.
 
-`00_preflight` asserts the expected counts (`EXPECT_CORES=128`, `EXPECT_ANCHORS=9`,
-`EXPECT_VARIATIONS=2`) so a selection mistake fails immediately rather than at ingest time.
+`00_preflight` asserts the expected counts — for this release `EXPECT_CORES=267`,
+`EXPECT_ANCHORS=0`, `EXPECT_VARIATIONS=24` — so a selection mistake fails immediately rather than at
+ingest time. **`EXPECT_ANCHORS=0` is correct here, not an unset placeholder:** anchor genomes are a
+SorghumBase concept and this release has none.
 
 ---
 
 ## Gene trees look wrong
 
 **Synthetic ids.** Trees whose compara `stable_id` is NULL get `SB<version>GT_<root_id>`, derived
-from `collections.getVersion()`. This was previously hardcoded and labelled v11 trees with the
-release-10 prefix. Override with `GT_PREFIX` if a release needs another scheme.
+from `collections.getVersion()`. **This never fires on a plants release** — all 170,249 trees in
+`search70` carry real compara ids (`EPlGT*`), as do r69's. If it ever does, note that the default
+`SB` prefix is a SorghumBase artifact and wrong for the main release; set `GT_PREFIX` explicitly.
 
 **Family roots.** Resolving a tree's root taxon by *stripping digits* off a synthetic taxon id is
 wrong — `45580072` becomes `4558007`, which is a different genome ("chinese amber"). Walk the taxon
@@ -110,27 +113,9 @@ parent chain instead. This was caught before shipping; if you see a tree rooted 
 specific accession, suspect this class of bug.
 
 **Representatives.** Selection is scored, with anchor genomes pinned and non-anchor genomes taking a
-+25 penalty. Changing that scoring requires re-running `make 35_genetrees` — the choices are stored,
++25 penalty. With `EXPECT_ANCHORS=0` here, *every* genome takes the non-anchor penalty, so the
+scoring reduces to the remaining criteria — a uniform shift, not a bug. Changing that scoring requires re-running `make 35_genetrees` — the choices are stored,
 not computed at read time.
-
----
-
-## MAKER attribute tables
-
-Two properties of the pan-gene GFF inputs, both of which produced wrong output on the first run:
-
-**Transcript ids are not unique across genomes.** These are pan-gene sets, so
-`3381.casb001g000110.635.1` occurs in five of the nine v11 accessions. `munge_MAKER.pl` keys on the
-transcript id, so one shared `geneID.canonical.txt` collapsed 391,601 canonical transcripts into
-114,114 gene ids and attributed one genome's scores to another's genes. **Munge each genome
-separately.** Do not "optimise" by concatenating the score files first.
-
-**Gene ids join the stable-id map only partially**, because the GFF and the stable-id assignment do
-not always pick the same source annotation as a gene's representative id (for `sorghum_pi655993`,
-14,387 of 46,077 join by id). The files *are* correctly paired — every id that joins has identical
-coordinates. The extractor joins by id first, then falls back to `(chr,start,end)`.
-
-Scripts and full notes: `../gramene-solr/maker_pipeline/README.md`.
 
 ---
 
@@ -202,32 +187,28 @@ core was loaded from still exists: `_terms` values derive from names/synonyms/al
 `solr_genes.attribs.json` holds correct values, and an atomic update that *explicitly provides*
 `_terms` restores it losslessly. A full reindex fixes it too, at the cost of core downtime.
 
-## A work dir glob sweeping in excluded genomes
+## A resumable work dir is not a manifest
 
-**Symptom.** The rsID table had **4,164,842** rows where the 102 included genomes account for
-**4,106,661**. The 58,181-row surplus was exactly `sorghum_353` (31,830) + `sorghum_pi154844`
-(26,351) — the two genomes that had just been deliberately excluded.
+A durable, resumable work dir also holds **the partial output a failed step wrote before it
+aborted**, plus anything left by earlier runs with different parameters. Assembling a final artifact
+with `cat "${TMP}"/*.tsv` therefore includes whatever happens to be lying around — excluding
+something from the *run* does nothing to exclude it from the *glob*. On the subsite this silently
+added 58,181 rows for two deliberately-excluded genomes to an otherwise structurally perfect table;
+every validator passed, because every structural property still held.
 
-**Cause.** `build_rsid_table.sh` assembled the table with `cat "${TMP}"/*.tsv`. The work dir is
-durable and resumable by design, so it also holds the **partial output a failed genome wrote before
-it aborted**, plus anything left by earlier runs with different parameters. Excluding a genome from
-the *run* did nothing to exclude it from the *glob*.
-
-Nothing downstream could have caught it: the rows are well-formed, the gene ids are unique, and
-`validate_rsid_table.sh` passed on the polluted table because every structural property still held.
-The only signal was the row count failing to reconcile against the sum of the per-genome files.
-
-**Fixed** by concatenating the selected genomes **by name** (`for g in "${GENOMES[@]}"`), never a
-glob, and by deleting a genome's `.tsv` when it fails so no partial file survives.
-
-**The general rule:** in a resumable pipeline, the work dir is not a manifest. Drive the final
-assembly from the list of things you meant to include, and reconcile the output count against that
-list — a glob will faithfully include whatever happens to be lying around.
+**The rule:** drive the final assembly from the list of things you meant to include
+(`for g in "${GENOMES[@]}"`), never a glob, and reconcile the output count against that list. Delete
+a unit's output when it fails, so no partial file survives. This applies directly to
+`search/tmp/` (267 gene dumps) and `search/tmp_homologs/` here — both are globbed, both are durable,
+and in `tmp_homologs` a truncated file is caught only because the skip check is `gzip -t` rather
+than a size or count test.
 
 ## Maize has no pathways (capabilities:pathways returns zero maize genes)
 
 **Symptom.** `q=*:* AND ((capabilities:pathways))` returns pathway genes for every species except
-maize. `sorghum_genes10` had 1,518 maize pathway genes; `10b` and `11` had none.
+maize. `sorghum_genes10` had 1,518 maize pathway genes; `10b` and `11` had none. **v70 is the first
+build to actually prove the fix** — v11 committed it but never re-decorated, so `search69` and
+`sorghum11` both still show 0.
 
 **Cause.** Plant Reactome files maize **twice**: `Zea mays` (taxId 4577, prefix **ZMA**) and
 `Zea mays ver5` (taxId 381124, prefix **ZMY**). The two inputs `get_pathways.js` reads disagree:
@@ -256,23 +237,144 @@ stay empty. That matches v10, which also had 1,518.
 **Verify** after a rebuild:
 
 ```bash
-curl -s '.../sorghum_genes11/select?q=capabilities:pathways+AND+system_name:zea_maysb73&rows=0'
-# expect ~1518, not 0
+# this release's maize genome is zea_mays (B73 v5), not zea_maysb73
+curl -s 'http://localhost:8983/solr/genes70/select?q=capabilities:pathways+AND+system_name:zea_mays&rows=0&wt=json'
+# expect ~1518 of 44,303, not 0
 ```
+
+Upstream of Solr, check the stage's own artifact — `Zm00001eb*` keys in
+`reactome/genes_to_pathways.json` should go from **0 filled of 1,587** to about **1,518 of 1,675**
+(`annotations.pathways.entries` is the field to test; every key has a wrapper object, so testing for
+a truthy value will tell you everything is fine when nothing is).
 
 Note the suggestion category `Plant Reactome: Pathway` is faceted from the genes core, so it must
 be regenerated after this is fixed or its per-genome counts will still omit maize.
+
+**364 rice `Os*` keys are still empty**, for a different reason: the japonica/UniProt enhancement
+that would fill them is deliberately skipped (`25_reactome.sh`). `search69` has ~1,590 rice genes
+with pathways, so this is a v70-vs-v69 regression to settle before publishing.
+
+## A stage aborts with a bare "Error 1" and no explanation
+
+**Symptom.** `make: *** [Makefile:112: .state/45_homologs.done] Error 1`, the stage log ends on the
+command it was running with no error text, and the expensive output is sitting on disk looking
+complete.
+
+**Cause seen here.** `45_homologs` ended a line with `rmdir "${TMP}/sorttmp" 2>/dev/null`. The sort
+temp is pointed at a filesystem big enough for a ~38 GB external sort by **symlink** (`/usr/local`
+is not), and `rmdir` on a symlink exits `ENOTDIR`. Being the last command on its line under
+`set -e`, that aborted the stage *immediately after a successful ten-minute sort* — and the
+`2>/dev/null` discarded the only clue.
+
+**The general shape:** `set -e` plus a trailing cleanup command whose failure is expected and
+suppressed. `2>/dev/null` hides the message, not the status. Any cleanup you do not care about needs
+`|| true`.
+
+**How to find it fast.** The log's last line is the command that *succeeded*; the failure is in
+whatever ran after it. Re-run that tail by hand without `2>/dev/null` and read the status:
+
+```bash
+bash -x stages/<stage>.sh 2>&1 | tail -40     # or just run the suspect cleanup line directly
+```
+
+---
+
+## An external service is down
+
+Two stages depend on external HTTP and will sit there producing nothing:
+
+| stage | depends on | note |
+| --- | --- | --- |
+| `25_reactome` | `plantreactome.gramene.org/ContentService` | **Gramene-operated** — ask for a restart |
+| `55_atlas` | `www.ebi.ac.uk/gxa` | EBI |
+
+A down ContentService is easy to misread, because the *host* stays healthy: `/` answers in 60 ms
+while every `/ContentService/data/*` path hangs until timeout. The file host
+(`/download/current/...`) is separate again and may be fine while the API is not — so the stage
+logs "✓ file ok" for its downloads and then stalls on the species-prefix step.
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{time_total}s
+' --max-time 25 \
+  'https://plantreactome.gramene.org/ContentService/data/species/all'   # 200 = up, 000 = hung
+```
+
+`25_reactome` fails *safely* when this happens: the empty `merge_into_taxonomy.json` trips an
+invalid-JSON guard, and `genes_to_pathways.json` is left untouched rather than half-rewritten. The
+ZMY append is idempotent (the `curl -o` above it overwrites the base file every run), so simply
+re-run the stage once the service returns.
+
+---
+
+## Re-running an early stage re-runs everything after it
+
+**Symptom.** You re-run `00_preflight` or `05_install` to verify something, then `make -n all`
+proposes re-dumping 267 genomes and rebuilding maps.
+
+**Cause.** The stamp targets encode the DAG as stamp-file dependencies, and make compares **mtimes**.
+A freshly re-run `00_preflight.done` is newer than every stamp below it, so the whole chain looks
+stale — even though nothing about the data changed.
+
+**Fix.** Don't delete and re-run the downstream stages. Bump the completed stamps' mtimes past the
+one you just refreshed, in dependency order, after confirming their outputs really are present:
+
+```bash
+D=$(date +%Y-%m-%d)
+touch -d "$D 19:16" .state/10_maps.done
+touch -d "$D 19:17" .state/15_ontologies.done .state/20_variation.done \
+                    .state/30_curated.done .state/40_genes_dump.done
+touch -d "$D 19:18" .state/35_genetrees.done
+make -n all        # should now propose only what you actually want
+```
+
+Verify before you stamp, not after: collection counts for the mongo stages, and for
+`40_genes_dump` that all 267 `search/tmp/*.json.gz` exist and pass `gzip -t`. A stamp asserts "this
+completed"; bumping one you have not checked is how a stale intermediate gets blessed.
+
+---
+
+## Deleting a Solr core by directory name
+
+On this host a core's **name does not match its `instanceDir`**, and for the r69 cores every name
+was shifted one place off its directory — the core named `genes69` lives in `/solr/data/genes69c`,
+while the directory called `genes69` held a disposable copy. `rm -rf` by directory name is a coin
+flip on the live index.
+
+```bash
+curl -s 'http://localhost:8983/solr/admin/cores?action=STATUS&wt=json' \
+  | python3 -c 'import json,sys; [print(n, c["instanceDir"], c["index"]["numDocs"]) for n,c in json.load(sys.stdin)["status"].items()]'
+```
+
+Confirm which name is live from the code that queries it — `gramene-swagger/api/helpers/solr.js`
+builds `` `${urlBase}genes${version}` `` from `getMongoConfig().version` — then remove by **name**:
+
+```bash
+curl -s 'http://localhost:8983/solr/admin/cores?action=UNLOAD&core=<name>&deleteInstanceDir=true'
+```
+
+Re-query the live core between deletions. `deleteInstanceDir=true` leaves `conf/` behind (~700 KB)
+but does remove `core.properties`, so the emptied directory is **not** re-discovered as a core on the
+next restart — which matters, because a stale `core.properties` is what produced a
+`CoreContainer is either not initialized` 404 after an earlier restart here.
+
+---
 
 ## Diagnosing something new
 
 An approach that has worked repeatedly here, in order:
 
-1. **Compare against the previous release.** `sorghum10b` is right there. Counts, field presence, a
-   specific gene's document — diff them.
+1. **Compare against the previous release.** `search69` / `genes69` are right there, and r69 is
+   live. Counts, field presence, a specific gene's document — diff them. (Mind the core naming:
+   `genes69`, not `gramene_genes69`.)
 2. **Check freshness, not just validity.** The intermediate is almost always well-formed; the
    question is whether it is *current*. Compare mtimes against stage stamps.
 3. **Verify the assumption you are most confident about.** The four-times-repeated stall was
    diagnosed the moment someone questioned whether the dumps matched `maps` — the part everyone
    assumed was fine.
-4. **Query the source directly.** MySQL on cabot, Mongo, and Solr are all reachable; when a derived
-   artifact looks wrong, go back to what it was derived from rather than reasoning about the code.
+4. **Query the source directly.** MySQL on colden, Mongo, and Solr are all reachable; when a
+   derived artifact looks wrong, go back to what it was derived from rather than reasoning about the
+   code.
+5. **Check whether the upstream service is simply down.** Two stages depend on external HTTP
+   (`25_reactome` on Plant Reactome, `55_atlas` on EBI GXA). A hang with no output is as likely to
+   be an unresponsive dependency as a bug — see
+   [An external service is down](#an-external-service-is-down) below.
