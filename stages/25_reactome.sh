@@ -47,6 +47,72 @@ else
   warn "missing ${ZMY_SUPP} — maize v5 genes will get EMPTY pathways (see docs/04-troubleshooting.md)"
 fi
 
+# ---- OPTIONAL: reuse another release's gene->pathway associations ----------
+# Steps 1 and 3 below are the only ContentService-dependent parts of this stage, and that service
+# goes down (2026-10-08: every /ContentService/data/* path hung for hours while the same host served
+# / and the download files normally). Plant Reactome itself publishes infrequently, so when the
+# upstream files have not changed, another release's genes_to_pathways.json is byte-for-byte what
+# this release would compute -- the per-gene output holds pathway/reaction ids, not taxon ids.
+#
+# This mode is explicit and never guessed, because it is only valid while upstream is unchanged --
+# which it VERIFIES by md5 rather than assuming. It supplies ONLY the associations file. The
+# pathways collection and taxonomy.reactomePrefix are keyed on this release's synthetic per-genome
+# taxon ids (`ancestors_4558001` here vs `ancestors_4558006` in sorghum v11, same values), so they
+# are release-specific, are NOT copied, and must already be populated by an earlier successful run.
+#
+#   make 25_reactome REACTOME_REUSE_FROM=/usr/local/gramene/subsites/sorghum/v11/gramene-mongodb/reactome
+if [ -n "${REACTOME_REUSE_FROM:-}" ]; then
+  SRC="${REACTOME_REUSE_FROM%/}"
+  log "REUSE MODE: sourcing gene->pathway associations from ${SRC}"
+  [ -d "${SRC}" ] || die "REACTOME_REUSE_FROM is not a directory: ${SRC}"
+  [ "${SRC}" != "${R}" ] || die "REACTOME_REUSE_FROM is this release's own reactome dir"
+
+  # (a) upstream must be IDENTICAL, or the reuse is not equivalent to a real run. The reactions
+  # file is compared with the ZMY rows stripped, since each tree appends its own copy; the
+  # supplement is then compared on its own.
+  for f in gene_ids_by_pathway_and_species.tab UniProt2PlantReactomeReactions.txt \
+           Ensembl2PlantReactomeReactions_Zmy_ver5.txt; do
+    [ -f "${SRC}/${f}" ] || die "reuse source lacks ${f}"
+    a="$(md5sum < "${R}/${f}" | cut -d' ' -f1)"
+    b="$(md5sum < "${SRC}/${f}" | cut -d' ' -f1)"
+    [ "${a}" = "${b}" ] || die "upstream ${f} differs from ${SRC} (${a} vs ${b}) -- Plant Reactome has changed, so re-run this stage fully instead"
+    ok "upstream unchanged: ${f}"
+  done
+  a="$(grep -v 'R-ZMY' "${R}/Ensembl2PlantReactomeReactions.txt" | md5sum | cut -d' ' -f1)"
+  b="$(grep -v 'R-ZMY' "${SRC}/Ensembl2PlantReactomeReactions.txt" | md5sum | cut -d' ' -f1)"
+  [ "${a}" = "${b}" ] || die "upstream Ensembl2PlantReactomeReactions.txt differs from ${SRC} (${a} vs ${b}) -- re-run this stage fully instead"
+  ok "upstream unchanged: Ensembl2PlantReactomeReactions.txt (ZMY rows excluded)"
+
+  # (b) the release-specific outputs this mode does NOT supply must already exist, from a previous
+  # successful run of this stage against THIS release's genome set.
+  assert_mongo_min pathways 100
+  pfx="$(mongo_eval "db.taxonomy.countDocuments({reactomePrefix:{\$exists:true}})" | tr -d '[:space:]')"
+  [ "${pfx:-0}" -gt 0 ] || die "taxonomy has no reactomePrefix -- reuse cannot supply it; run this stage fully once"
+  ok "taxonomy docs with reactomePrefix: ${pfx}"
+
+  # (c) and the pathways collection must be keyed on THIS release's taxa, not the source's. Picking
+  # a genome from maps that carries a reactomePrefix, some pathway must have its ancestors_<taxon>.
+  keyed="$(mongo_eval '
+    const t = db.taxonomy.find({reactomePrefix:{$exists:true}},{_id:1}).toArray().map(d=>d._id);
+    const hit = t.find(id => db.pathways.countDocuments({["ancestors_"+id]:{$exists:true}}) > 0);
+    print(hit === undefined ? "NONE" : hit);' | tr -d '[:space:]')"
+  [ "${keyed}" != "NONE" ] && [ -n "${keyed}" ] \
+    || die "no pathways doc is keyed on any of this release's taxa -- the pathways collection belongs to another genome set; run this stage fully"
+  ok "pathways collection is keyed on this release's taxa (e.g. ancestors_${keyed})"
+
+  # (d) take the associations
+  [ -s "${SRC}/genes_to_pathways.json" ] || die "reuse source lacks a non-empty genes_to_pathways.json"
+  cp -p "${SRC}/genes_to_pathways.json"     "${R}/genes_to_pathways.json"
+  [ -s "${SRC}/genes_to_pathways.raw.json" ] && cp -p "${SRC}/genes_to_pathways.raw.json" "${R}/genes_to_pathways.raw.json"
+  assert_valid_json genes_to_pathways.json
+  n_keys="$("${NODE_BIN}" --max-old-space-size=4096 -e 'process.stdout.write(String(Object.keys(require("'"${R}"'/genes_to_pathways.json")).length))')"
+  ok "reused genes_to_pathways.json (${n_keys} gene keys) from ${SRC}"
+  ln -sf "${R}/genes_to_pathways.json" "${MONGODB_REPO}/search/genes_to_pathways.json"
+  warn "associations were REUSED, not rebuilt -- valid only because upstream is byte-identical (verified above)"
+  stage_end
+  exit 0
+fi
+
 # 1) reactome species prefixes from the anchor genomes
 log "deriving reactome species prefixes"
 "${NODE_BIN}" get_species_prefixes.js > merge_into_taxonomy.json
