@@ -359,6 +359,74 @@ next restart — which matters, because a stale `core.properties` is what produc
 
 ---
 
+## Two genomes claim the same gene stable id
+
+**Symptom, if you are lucky.** `40_genes_dump` fails its third gate naming the colliding genome
+pair. **Symptom, if you are not.** `50_genes_decorate` dies in `genetree_adder` with
+`Cannot read properties of undefined (reading 'score')` after loading every tree — because a tree
+held two leaves with the same `gene_stable_id` and only one of them got a representative. That is
+how this was found, nine minutes into a 16.1M-gene stage.
+
+**Why it matters more than it looks.** `<db>.genes` keys on the gene stable id, and so does the
+Solr core (`uniqueKey` is `id`, set from `mongo._id`). If two genomes claim one id, the second
+write *replaces* the first. Nothing errors, and the collection total stays plausible, so only a
+per-genome completeness check can see it.
+
+**It has already shipped.** In `search69`, `triticum_aestivum_alchemy` owns the `TraesCS*` ids and
+reference wheat retains **17,705 of its 120,744 genes** — 85% of a flagship genome missing from the
+live site. An audit of all 233 r69 genomes found wheat to be the *only* one more than 1% short, so
+this is isolated but severe.
+
+### The two cases in v70
+
+| pair | shared ids | nature |
+| --- | --- | --- |
+| `triticum_aestivum` ↔ `triticum_aestivum_alchemy` | 103,039 | **a core regression — fixable** |
+| `lablab_purpureus_gca030347555v1cm` ↔ `medicago_truncatula` | 24,925 | no stable ids ever assigned |
+
+**Wheat is a prefix regression.** `..._alchemy_core_69_114_1` labels its genes `TraesALC*`;
+`..._alchemy_core_70_116_1` labels the very same annotation `TraesCS*`, which is the reference's
+namespace. Same assembly (GCA951799155v1), same accession, same genebuild, same 106,786 genes, and
+joining the two cores on `REPLACE(stable_id,'TraesALC','TraesCS')` matches 106,786 of 106,786 with
+identical seq_region/start/end/strand. Compara agrees the prefix belongs to the reference: both
+`ensembl_compara_plants_69_114` and `_70_116` contain **zero** alchemy genome_dbs and zero
+`TraesALC*` members, while all 107,545 `TraesCS*` `gene_member` rows belong to genome_db 2102 =
+`triticum_aestivum` (IWGSC). So renaming alchemy back to `TraesALC*` desyncs nothing, and since
+alchemy is not in compara it has no trees or homologs either way.
+
+**The legumes are not a regression.** `medicago_truncatula_core_69_114_3` and `_70_116_3` both use
+placeholder `geneNNNN` ids on MtrunA17r5.0_ANR (the older MedtrA17_4.0 core used proper `MTR_*`
+ids — they were lost at the assembly switch), and `lablab_purpureus` does the same. Compara
+*contains* both (genome_db 2282 and 2308) with the colliding ids, distinguishing them only by
+`genome_db_id`, so there is no correct prefix to restore and any rename would have to be applied to
+the compara reads in `35_genetrees`/`45_homologs` as well.
+
+### Diagnosing a new one
+
+```bash
+make check-stable-ids          # the same check 40_genes_dump gates on
+```
+
+Then compare the suspect genome's core against the **previous release's core for the same
+assembly** — that is what identified the wheat regression in minutes:
+
+```sql
+SELECT LEFT(stable_id,10), COUNT(*) FROM gene GROUP BY 1 ORDER BY 2 DESC LIMIT 5;  -- in each core
+```
+
+If the prefixes differ while assembly, accession, genebuild and gene count match, it is a labelling
+regression in the newer core and belongs upstream, not in a workaround here. Confirm with a join on
+the expected prefix swap, asserting identical coordinates.
+
+### Accepting one deliberately
+
+`STABLE_ID_COLLISION_ALLOW="genomeA:genomeB,genomeC:genomeD"` (order-insensitive) stops a pair
+blocking the build. It does **not** stop the genes being dropped, and anything unlisted still
+fails, so a newly introduced collision cannot pass silently. Record *why* in
+[docs/06-open-items.md](06-open-items.md) whenever you add one.
+
+---
+
 ## Diagnosing something new
 
 An approach that has worked repeatedly here, in order:

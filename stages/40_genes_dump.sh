@@ -108,4 +108,18 @@ bad.slice(0,10).forEach(b=>console.log("  "+b));
 process.exit(bad.length ? 1 : 0);
 ' || die "dump taxon_id does not match maps — the dumps are stale, delete search/tmp/*.json.gz and re-run 40_genes_dump"
 ok "dump taxon_id matches maps"
+
+# ---- third gate: no gene stable id may be claimed by two genomes ----
+# <db>.genes keys on the gene stable id (and so does the Solr core), so if two genomes claim the
+# same one the second write silently replaces the first and the totals still look plausible. Two
+# pairs did this in v70, and one of them shipped in r69 -- reference wheat serves 17,705 of its
+# 120,744 genes there because triticum_aestivum_alchemy's core used the reference's TraesCS*
+# namespace. The dumps are the first place every gene id exists locally, so this is the earliest
+# point the check is cheap; the alternative was finding out nine minutes into the decorate.
+log "checking for gene stable id collisions across genomes"
+SORT_TMP="${SORT_TMP:-${BUILD_DIR}/tmp}" SORT_MEM="${STABLE_ID_SORT_MEM:-4G}" \
+  STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-}" \
+  bash "${SEARCH}/check_stable_id_collisions.sh" "${SEARCH}/tmp" \
+  || die "gene stable id collisions (see above) — fix the source core, or record the decision in STABLE_ID_COLLISION_ALLOW"
+ok "no blocking gene stable id collisions"
 stage_end

@@ -58,6 +58,13 @@ export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-genes69}"
 export MAKER_TABLE="${MAKER_TABLE:-}"
 export VEP_TABLE="${VEP_TABLE:-}"
 
+# --- gene stable id collisions ------------------------------------------------
+# 40_genes_dump refuses to pass dumps in which two genomes claim the same gene stable id, because
+# <db>.genes and the Solr core both key on it, so one copy would silently replace the other. List
+# "genomeA:genomeB" pairs here ONLY after examining them and accepting the loss; anything not
+# listed fails the stage. Empty is the correct value for a healthy release.
+export STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-}"
+
 # --- services ----------------------------------------------------------------
 export SOLR_URL="${SOLR_URL:-http://localhost:8983/solr}"
 export SOLR_DATA_DIR="${SOLR_DATA_DIR:-/solr/data}"

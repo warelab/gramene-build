@@ -64,6 +64,12 @@ refresh-vep:              ; bash $(ST)/62_attr_atomic.sh vep
 refresh-grassius-homolog: ; bash $(ST)/62_attr_atomic.sh grassius
 refresh-expression-attrs: ; bash $(ST)/62_attr_atomic.sh expression
 
+# Ad hoc: are any gene stable ids claimed by two genomes? Runs against the dumps in
+# gramene-mongodb/search/tmp, the same check 40_genes_dump gates on.
+check-stable-ids:
+	@. ./config.sh; SORT_TMP="$${SORT_TMP:-$(CURDIR)/tmp}" SORT_MEM="$${STABLE_ID_SORT_MEM:-4G}" \
+	  bash $${MONGODB_REPO}/search/check_stable_id_collisions.sh $${MONGODB_REPO}/search/tmp
+
 # Re-apply user gene-list saved_search tags after a FULL reindex of the genes core. They are
 # written post-load by the API, so a core rebuild drops them; additive + idempotent, safe to re-run.
 # Main release: lists live in the shared userData1 only -- the per-site sorghum dbs are a

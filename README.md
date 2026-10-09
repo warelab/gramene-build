@@ -255,6 +255,11 @@ fail the build rather than warn.
   per-genome taxon ids are *reassigned* whenever the genome set changes — with gene counts
   unchanged, so a line-count check cannot see it. Dumps older than `.state/10_maps.done` are
   re-dumped, and every dump's `taxon_id` must equal `maps.taxon_id` for that genome.
+* **`40_genes_dump` also refuses colliding gene stable ids.** `<db>.genes` and the Solr core both
+  key on the stable id, so two genomes claiming one means the second write silently replaces the
+  first with every count still plausible. This shipped in r69, where reference wheat serves 17,705
+  of its 120,744 genes. `make check-stable-ids` runs the check on demand;
+  `STABLE_ID_COLLISION_ALLOW` accepts a pair deliberately, and anything unlisted fails.
 * **`45_homologs` resumes from the sorted flatfile.** The sorted pairs file is phase 4's only input;
   it is skipped when it passes `gzip -t`. Point its sort temp (`tmp_homologs/sorttmp`) at a
   filesystem that can hold a ~38 GB external sort — a symlink is fine and expected.

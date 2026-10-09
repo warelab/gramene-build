@@ -50,7 +50,56 @@ when nothing has changed.
 
 ---
 
-## 2. 364 rice `Os*` pathway keys are empty — a v69 regression
+## 2. Gene stable id collisions — 127,964 ids across two genome pairs
+
+`<db>.genes` and the Solr core both key on the gene stable id, so where two genomes claim one the
+second write silently replaces the first. `40_genes_dump` now gates on this
+(`make check-stable-ids`); full background in
+[docs/04-troubleshooting.md](04-troubleshooting.md#two-genomes-claim-the-same-gene-stable-id).
+
+### 2a. Wheat — 103,039 ids. A core regression with a prepared fix.
+
+`triticum_aestivum_alchemy_core_70_116_1` labels its genes `TraesCS*`, the **reference's**
+namespace; the r69 core for the identical annotation used `TraesALC*`. Proven a pure relabel: same
+assembly/accession/genebuild/gene count, and 106,786 of 106,786 genes join across the two cores on
+the prefix swap with identical coordinates. Compara confirms the namespace is the reference's — no
+alchemy genome_db and no `TraesALC*` members in either `_69_114` or `_70_116`, while all 107,545
+`TraesCS*` `gene_member` rows belong to genome_db 2102.
+
+**This is the one that already shipped**: in `search69`, alchemy owns the `TraesCS*` ids and
+reference wheat serves **17,705 of its 120,744 genes**. An audit of all 233 r69 genomes found wheat
+to be the only one >1% short.
+
+**Fix:** [`build/fix_alchemy_stable_ids.sql`](../fix_alchemy_stable_ids.sql) renames
+`TraesCS*` → `TraesALC*` across `gene`, `transcript`, `translation` and `exon` (868,839 rows;
+the prefix occurs nowhere else — `stable_id_event`, `gene_archive`, xref, the `*_attrib` tables and
+`protein_align_feature` are all clean). Its three read-only queries are tested; the four `UPDATE`s
+need a writer account, as the build's `gramene_web` is read-only.
+
+Downstream cost is small: alchemy is not in compara, so no trees or homologs change and no taxon
+ids move. Re-dump that one genome (~107k genes, minutes), then run stage 50. Reference wheat will
+be complete for the first time since r69.
+
+### 2b. Legumes — 24,925 ids. Needs a decision.
+
+`medicago_truncatula` (all 50,739 genes) and `lablab_purpureus_gca030347555v1cm` (24,972 of 25,505)
+both use placeholder `geneNNNN` ids. **Not** a regression: medicago's `_69_114_3` and `_70_116_3`
+cores are identical in this respect, the proper `MTR_*` ids having been lost at the
+MedtrA17_4.0 → MtrunA17r5.0_ANR assembly switch, before r69. r69 escaped the collision only because
+it did not host lablab.
+
+Compara **contains both** (genome_db 2282 and 2308) with the colliding ids, distinguishing them by
+`genome_db_id` alone — so unlike wheat there is no correct prefix to restore, and any rename we
+invent has to be applied consistently to the compara reads in `35_genetrees` and `45_homologs` too.
+
+Options, in the order I would weigh them: get real stable ids assigned upstream; or qualify one
+genome's whole id space in the pipeline (~25k genes, with `alt_id` keeping the bare id searchable);
+or accept the loss via `STABLE_ID_COLLISION_ALLOW` and record which genome wins. **Stage 50 is
+blocked on this** even after the wheat fix, because both genomes are in the current set.
+
+---
+
+## 3. 364 rice `Os*` pathway keys are empty — a v69 regression
 
 `search69.genes` has ~1,590 rice genes with pathways; this release's artifact has 364 rice keys with
 **no** pathway entries, because the japonica/UniProt enhancement that fills them is deliberately
@@ -62,7 +111,7 @@ it, do the awk/pack munge from the original recipe against `merged_lut.txt` befo
 
 ---
 
-## 3. saved_search will restore 0 of 14 — expected, recorded here so it isn't read as a bug
+## 4. saved_search will restore 0 of 14 — expected, recorded here so it isn't read as a bug
 
 `genes69` carries `saved_search` tags on **14 documents across 8 hashes**, and **none of those
 hashes exists in any `genelists` collection** — all 62 surviving lists are `site:'sorghum'`. The
@@ -87,7 +136,7 @@ nothing to restore *into* before now.
 
 ---
 
-## 4. Deployment steps not done
+## 5. Deployment steps not done
 
 `70_services` has not run. When it does it prints the full checklist; these are the ones that need a
 human:
@@ -106,7 +155,7 @@ human:
 
 ---
 
-## 5. maps QC over-reports failures against the public REST
+## 6. maps QC over-reports failures against the public REST
 
 `ENSEMBL_REST` is now `https://rest.ensembl.org`, which is the only endpoint that resolves this
 release's genomes (measured: 267/267, versus 0 for `localhost:3000` and 18 for the SorghumBase
@@ -120,7 +169,7 @@ So the QC report will name genomes as unresolvable that are perfectly fine. It i
 
 ---
 
-## 6. Housekeeping
+## 7. Housekeeping
 
 ### `/solr`
 
@@ -156,7 +205,7 @@ destroyed the 267-core configuration; keep skipping it.
 
 ---
 
-## 7. Flagged, not fixed: the v10b mis-pin
+## 8. Flagged, not fixed: the v10b mis-pin
 
 `subsites/sorghum/v10b/gramene-mongodb/package.json:29` pins the config at `#sorghum_v11`, and its
 `node_modules` copy resolves to **`sorghum11`**. Any ETL run from that repo writes to the wrong
@@ -166,7 +215,7 @@ anyone runs a build from that tree.
 
 ---
 
-## 8. Known-good baselines for comparison
+## 9. Known-good baselines for comparison
 
 Useful when something downstream looks wrong:
 
