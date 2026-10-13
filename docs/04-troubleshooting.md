@@ -427,6 +427,61 @@ fails, so a newly introduced collision cannot pass silently. Record *why* in
 
 ---
 
+## A compara-driven stage is 100x slower than its own last run
+
+`35_genetrees` ran the same 170,253 trees in **48 minutes on 2026-07-08** and, restarted on
+2026-10-13, settled at **24.7 trees/min — a 115-hour projection**. Nothing about the query had
+changed; `EXPLAIN` was optimal (every join `eq_ref` on `PRIMARY`, driven by a range scan on
+`gene_tree_root`). The cause was colden's **OS page cache**, and the same trap applies to any stage
+that reads compara in many small batches.
+
+Why compara is unusually exposed: the tables are **MyISAM** and `key_buffer_size` on colden is
+**32 MB** against ~11 GB of MyISAM indexes, so the page cache is doing essentially all of the
+caching. `genetree.js` fetches 100 root_ids at a time and assembles ~200-270k rows per batch from
+scattered primary-key lookups across ~33 GB (`gene_align_member` 13.1, `gene_tree_node` 7.3,
+`sequence` 4.1, `seq_member` 3.8, `gene_member` 3.0, `gene_tree_node_attr` 2.2). Cold, that is
+~1.7M random reads per batch; warm, it is memory.
+
+**The measurement that identifies it.** Time one batch twice. Pull the real query out of the stage
+log, swap in 100 root_ids the stage has *not* reached yet, and run it twice in a row:
+
+```bash
+awk '/^select r.root_id,/{f=1} f{print} /order by r.root_id, n.left_index;/{if(f)exit}' \
+  logs/35_genetrees.log > /tmp/batch.sql
+# replace the IN list with ids from the far end: order by root_id desc limit 100
+time mysql ... < /tmp/batch.sql | wc -l   # cold
+time mysql ... < /tmp/batch.sql | wc -l   # warm
+```
+
+Measured 2026-10-13: **63s cold, 9s then 8.6s warm**. A large, *repeatable* cold/warm gap on an
+unchanged query with a good plan means page cache, not the query.
+
+**Do not** read a single `SHOW PROCESSLIST` sample as a stall. That connection sat in
+`Copying to tmp table` for 741s and looked wedged, but the node driver holds **one persistent
+connection**, so the `id` never changes and only `time` resetting reveals that batches are
+completing. Sample the state repeatedly instead, and confirm progress independently
+(`db.genetree.count()`), before concluding anything is stuck. Note also that `Copying to tmp table`
+is unavoidable here rather than a symptom: `sq.sequence` is a TEXT column, so MySQL cannot use an
+in-memory temp table for the `ORDER BY` and always goes to disk.
+
+Two readings that looked like evidence and were not: a 10.5s timing of "the same query", which was
+fast only because it re-read the rows the stage had *just* pulled into cache; and a 1.2% CPU reading
+from `ps`, which is a lifetime average, not the instantaneous figure (`top -b -n 2` gave the real
+0.0%). Low CPU plus `currentOp` showing zero active mongo ops is what localised it to the server.
+
+**The fix.** [`trees/warm_compara_cache.sh`](../../gramene-mongodb/trees/warm_compara_cache.sh)
+sequentially scans the six tables, ~81 seconds for all 33 GB, strictly read-only, with
+www.gramene.org measured at 24-72 ms throughout. It works on an **already-running** stage — applied
+mid-run it took the rate 24.7 -> 2,625 trees/min with no restart. Each scan is a `SUM()` over a
+non-indexed column on purpose: on MyISAM a bare `COUNT(*)` comes from stored metadata and reads
+nothing.
+
+The cache is cold precisely *after maintenance* — the stable-id rename UPDATEs, a compara dump, or
+any exploratory full scan evicts it — so treat a cold cache as the normal state following that work
+and warm before a tree or homology stage rather than diagnosing it again. Do not edit
+`35_genetrees.sh` to call it while the stage is executing: bash reads a script incrementally and
+editing it mid-run corrupts execution.
+
 ## Diagnosing something new
 
 An approach that has worked repeatedly here, in order:
