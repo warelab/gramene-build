@@ -45,11 +45,16 @@ for spec in "${TREE_SETS[@]}"; do
     run "${NODE_BIN}" ${BIG_HEAP} genetree.js
   after="$(mongo_count genetree)"
   got=$(( after - before ))
-  # A set landing far under its expected count means the clusterset name or the stable_id filter
-  # moved upstream; that is worth stopping for rather than quietly shipping a thin tree set.
-  [ "${got}" -ge $(( want * 9 / 10 )) ] \
-    && ok "tree set '${ts}': ${got} trees loaded" \
-    || die "tree set '${ts}': only ${got} trees loaded, expected ~${want} — check clusterset_id upstream"
+  # Bounded on BOTH sides. Too few means the clusterset name or the stable_id filter moved
+  # upstream. Too many means the per-set env did not reach genetree.js and it rebuilt 'default'
+  # again -- which a lower bound alone cannot see, because 'default' is larger than every crop set.
+  lo=$(( want * 9 / 10 )); hi=$(( want * 3 / 2 ))
+  if [ "${got}" -lt "${lo}" ]; then
+    die "tree set '${ts}': only ${got} trees loaded, expected ~${want} — check clusterset_id upstream"
+  elif [ "${got}" -gt "${hi}" ]; then
+    die "tree set '${ts}': ${got} trees loaded, expected ~${want} — the set selection did not take (did TREE_SET/CLUSTERSET reach genetree.js?)"
+  fi
+  ok "tree set '${ts}': ${got} trees loaded"
 done
 
 # indexes: compara_db for backward compatibility, tree_set for the per-set LUT the adder builds
