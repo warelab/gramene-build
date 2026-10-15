@@ -57,4 +57,46 @@ run bash -c "${UZ} '${SORTED}' | '${NODE_BIN}' --max-old-space-size=8192 load_ho
 docs="$(mongo_count homologs)"
 [ "${docs:-0}" -gt 0 ] && ok "homologs collection has ${docs} gene docs" \
   || die "${MONGO_DB}.homologs is empty after load"
+
+# 6) assert CROSS-SPECIES orthology is actually present.
+#
+# "Non-empty" is not a correctness test. On 2026-10-14 this stage shipped a collection of
+# 9,083,100 docs and 964,496,164 values that contained essentially ONLY within-species paralogs:
+# homology_member.tsv.gz held 965,185,582 of the table's 2,114,930,328 rows while passing gzip -t,
+# so for 550 million consecutive homologies build_homologs.js found no members and silently kept
+# nothing. Os01g0517500 came out with 42 homologs against release 69's 239; AT1G78400 had 50, all
+# arabidopsis. The dumps are row-count verified now, but this asserts the OUTCOME rather than the
+# input, because that is the property we actually care about and the one nobody was checking.
+log "asserting cross-species orthology is present"
+hom_check="$(mongo --quiet "${MONGO_DB}" --eval '
+  var want = ["ortholog_one2one","ortholog_one2many","ortholog_many2many","within_species_paralog"];
+  var seen = {}, probed = 0, crossSpecies = 0;
+  // A small deterministic probe: these genes are in the default trees in every recent release.
+  var probes = ["Os01g0517500","AT1G78400","Zm00001eb000010"];
+  probes.forEach(function (id) {
+    var d = db.homologs.findOne({_id: id});
+    if (!d || !d.homologous_genes) { return; }
+    probed++;
+    var pfx = id.replace(/[0-9._].*$/, "");
+    Object.keys(d.homologous_genes).forEach(function (k) {
+      seen[k] = true;
+      (d.homologous_genes[k] || []).forEach(function (o) {
+        if (String(o).indexOf(pfx) !== 0) { crossSpecies++; }
+      });
+    });
+  });
+  var missing = want.filter(function (k) { return !seen[k]; });
+  print(probed + "|" + crossSpecies + "|" + missing.join(","));
+' 2>/dev/null | tail -1)"
+hc_probed="${hom_check%%|*}"; hc_rest="${hom_check#*|}"
+hc_cross="${hc_rest%%|*}"; hc_missing="${hc_rest#*|}"
+log "  probe genes found: ${hc_probed:-0}; cross-species homolog values: ${hc_cross:-0}"
+[ "${hc_probed:-0}" -ge 2 ] \
+  || die "only ${hc_probed:-0} of 3 probe genes have homologs -- the store is far too sparse"
+[ "${hc_cross:-0}" -ge 100 ] \
+  || die "only ${hc_cross:-0} cross-species homolog values across the probe genes (expect hundreds).\
+ This is the 2026-10-14 failure: check tmp_homologs/*.rows against the compara tables."
+[ -z "${hc_missing}" ] \
+  || die "homology kinds missing entirely: ${hc_missing} -- orthology did not survive the build"
+ok "cross-species orthology present (${hc_cross} values, all expected kinds)"
 stage_end
