@@ -26,6 +26,45 @@ cd "${GENES}"
 # resume (it skips the already-committed docs).
 CONF="${GENES}/conf"
 [ -d "${CONF}" ] || CONF="${SOLR_DATA_DIR}/${PREV_GENES_CORE}/conf"
+
+# ── GATE: refuse a schema whose fields atomic updates cannot preserve ────────────────────────
+# Solr implements an atomic update by reconstructing the doc from its STORED fields and
+# reindexing. A field that is indexed but neither stored nor docValues, and is not a copyField
+# destination, cannot be reconstructed and is silently lost from every doc touched. 62_attr_atomic
+# already refuses on this -- but it checks the LIVE core, i.e. after this stage has spent hours
+# building it. `_terms` (indexed, stored=false, no docValues, no copyField, written directly by
+# mongo2solr.js) was wiped from 247,323 docs that way, breaking free-text search for them and
+# feeding through to the suggestions core, which facets on _terms.
+#
+# So apply the same predicate to the conf BEFORE the core is created, and fail in seconds instead
+# of after the build. Same four conditions as 62, so the two cannot disagree. _terms itself is
+# stored=true as of dab1932; this exists so that a future schema edit cannot quietly undo it.
+log "checking ${CONF}/managed-schema for fields atomic updates cannot preserve"
+UNSAFE_FIELDS="$("${NODE_BIN}" -e '
+  const fs = require("fs");
+  // Strip XML comments first: managed-schema keeps a commented-out <field name="_root_" .../>
+  // which otherwise reads as a live indexed-but-unstored field and blocks the stage on a false
+  // positive. (Found by testing the gate rather than by reading it.)
+  const xml = fs.readFileSync(process.argv[1], "utf8").replace(/<!--[\s\S]*?-->/g, "");
+  const dests = new Set();
+  for (const m of xml.matchAll(/<copyField\b[^>]*\bdest="([^"]+)"/g)) dests.add(m[1]);
+  const bad = [];
+  for (const m of xml.matchAll(/<field\b([^>]*)\/>/g)) {
+    const a = m[1];
+    const name = (a.match(/\bname="([^"]+)"/) || [])[1];
+    if (!name) continue;
+    const on = (k) => new RegExp("\\b" + k + "=\"true\"").test(a);
+    if (on("indexed") && !on("stored") && !on("docValues") && !dests.has(name)) bad.push(name);
+  }
+  console.log(bad.join(" "));
+' "${CONF}/managed-schema" 2>/dev/null)"
+if [ -n "${UNSAFE_FIELDS}" ]; then
+  die "schema has indexed-but-unrecoverable field(s): ${UNSAFE_FIELDS}
+ Each is indexed, not stored, has no docValues and is not a copyField destination, so any atomic
+ update (62_attr_atomic) silently erases it from every document it touches. Set stored=\"true\"
+ on them in ${CONF}/managed-schema before building the core."
+fi
+ok "schema is atomic-update safe (no indexed-but-unrecoverable fields)"
 existing="$(solr_numdocs "${SOLR_GENES_CORE}" 2>/dev/null || echo 0)"
 if [ "${existing:-0}" -eq 0 ] || [ "${REBUILD_CORE:-0}" = "1" ]; then
   log "using genes conf: ${CONF}"
