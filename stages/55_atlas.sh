@@ -91,8 +91,19 @@ log "parsing expression TSVs into ${MONGO_DB}.expression (heap ${ATLAS_HEAP})"
 # expression by an OLD assembly's gene IDs (e.g. poplar POPTR_*v3, grapevine VIT_,
 # barley HORVU1Hr1) while this build's genes use the NEW IDs (Potri.*, Vitvi*,
 # HORVU.MOREX.r3). new_old.lut.txt maps old->new; this clones each matching
-# expression doc onto the new gene IDs so it attaches in mongo2solr. Insert-only,
-# so it must run exactly once per (freshly loaded) expression collection.
+# expression doc onto the new gene IDs so it attaches in mongo2solr.
+#
+# IDEMPOTENT, and safe to run on its own. This comment used to say "Insert-only, so it must run
+# exactly once per (freshly loaded) expression collection", which stopped being true when the
+# script moved to bulkWrite updateOne/$set with upsert:true (verified at its line 71, not taken
+# from its header). The distinction matters in practice: the LUT is edited independently of this
+# stage -- 957 medicago mappings were added on 2026-10-14, long after this stage's stamp was
+# written on 2026-10-08, so make considers the stage done and never revisits it. Re-run just the
+# projection with:
+#   node --max-old-space-size=8192 ../gramene-mongodb/atlas/project_expression_via_lut.js \
+#        ../gramene-mongodb/atlas/new_old.lut.txt
+# Medicago had in fact never been projected: 0 docs keyed MtrunA17_* against 51,519 keyed on the
+# Atlas MTR_* ids. On 2026-10-16 that run created 24,024, and 400 of 400 sampled join a gene.
 if [ -s "${A}/new_old.lut.txt" ]; then
   log "projecting expression onto re-versioned gene IDs (new_old.lut.txt)"
   if [ "${INCREMENTAL}" = "1" ]; then
