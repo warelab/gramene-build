@@ -86,6 +86,46 @@ fi
 # reuse it instead of re-running the ~20min conversion.
 SOLR_HEAP="${SOLR_HEAP:---max-old-space-size=16384}"
 want_lines=$(( $(mongo_count genes) * 2 + 1 ))
+
+# ── SPACE: these intermediates are enormous, and there was no check at all ───────────────────
+# solr_genes.json holds one JSON doc per line (want_lines = genes*2+1), and
+# solr_genes.attribs.json is that file piped through add_attributes.pl, so BOTH exist at once.
+# Measured 2026-10-16: 4.4 KB/line, i.e. ~131 GB each at 16,127,051 genes -> ~265 GB of
+# intermediates. With no check, mongo2solr.join.js wrote 106 GB and filled /usr/local to 100%
+# (20K free) -- the filesystem that also carries the live subsites and release69. The stage then
+# died on ENOSPC having left a 106 GB truncated file behind.
+#
+# SOLR_DUMP_DIR relocates both files (e.g. to /scratch). The stage refers to them by bare
+# relative name in a dozen places, so they are symlinked rather than every reference rewritten.
+BYTES_PER_LINE="${SOLR_DUMP_BYTES_PER_LINE:-4400}"
+need_gb=$(( want_lines * BYTES_PER_LINE * 2 / 1073741824 ))
+
+if [ -n "${SOLR_DUMP_DIR:-}" ]; then
+  mkdir -p "${SOLR_DUMP_DIR}" || die "cannot create SOLR_DUMP_DIR=${SOLR_DUMP_DIR}"
+  for f in solr_genes.json solr_genes.attribs.json; do
+    # Leave a real, complete file alone so the resume path still works.
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      log "keeping existing real ${f} in $(pwd) (not relocating)"
+    else
+      rm -f "$f"
+      ln -s "${SOLR_DUMP_DIR}/$f" "$f" || die "could not link ${f} -> ${SOLR_DUMP_DIR}/$f"
+    fi
+  done
+  log "intermediates relocated to ${SOLR_DUMP_DIR} (via symlink)"
+fi
+
+# Check the filesystem the dump will actually land on, following any symlink above.
+space_target="$(dirname "$(readlink -f solr_genes.json 2>/dev/null || echo "$(pwd)/solr_genes.json")")"
+avail_gb=$(( $(df -P --block-size=1 "${space_target}" | awk 'NR==2{print $4}') / 1073741824 ))
+log "intermediates need ~${need_gb} GB; ${space_target} has ${avail_gb} GB free"
+if [ "${avail_gb}" -lt "${need_gb}" ]; then
+  die "not enough space for the solr intermediates: ${space_target} has ${avail_gb} GB free, need ~${need_gb} GB
+ (${want_lines} lines x ~${BYTES_PER_LINE} B x 2 files). Point them at a bigger filesystem, e.g.
+   SOLR_DUMP_DIR=/scratch/\${USER}/release70_solr make 60_solr_genes
+ Writing 106 GB and then dying on ENOSPC filled /usr/local to 100% on 2026-10-16; this check
+ exists so that cannot happen silently again."
+fi
+ok "space for intermediates confirmed (${avail_gb} GB free >= ~${need_gb} GB needed)"
 if [ -s solr_genes.json ] && tail -c 3 solr_genes.json | grep -q ']' \
    && [ "$(wc -l < solr_genes.json)" = "${want_lines}" ]; then
   log "reusing existing complete solr_genes.json ($(wc -c <solr_genes.json) bytes, ${want_lines} lines)"
