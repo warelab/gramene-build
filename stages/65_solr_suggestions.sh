@@ -69,7 +69,15 @@ else
   # release-70 scale and exited 0 with a truncated file when a q-io promise was lost.
   SUGGEST_TERMS_RAW="${SOLR_TERMS_TSV:-${SOLR_DUMP_DIR:-${GENES}}/terms.tsv}"
   SUGGEST_TERMS_TSV="${SUGGEST_TERMS_TSV:-${SUGGEST_TERMS_RAW%.tsv}.sorted.tsv}"
-  if [ ! -s "${SUGGEST_TERMS_TSV}" ]; then
+  # Regenerate the sorted file when it is MISSING, when the raw terms.tsv is newer, or when the
+  # genes core was rebuilt after it. The missing-only check this used to do was a stale-reuse hole
+  # of exactly the kind the genes.json comment above describes: 60_solr_genes rewrites terms.tsv on
+  # every run, but a left-over terms.sorted.tsv from the PREVIOUS run is non-empty, so it was
+  # silently reused and the suggestions were built from the old (term, taxon_id) pairs. Unlike
+  # genes.json, nothing here was comparing it against the genes core at all.
+  if [ ! -s "${SUGGEST_TERMS_TSV}" ] \
+     || { [ -s "${SUGGEST_TERMS_RAW}" ] && [ "${SUGGEST_TERMS_RAW}" -nt "${SUGGEST_TERMS_TSV}" ]; } \
+     || stale_vs_genes "${SUGGEST_TERMS_TSV}"; then
     [ -s "${SUGGEST_TERMS_RAW}" ] || die "no term/taxon pairs at ${SUGGEST_TERMS_RAW}.
  60_solr_genes writes them (SOLR_TERMS_TSV). To make them without re-running stage 60:
    cd ${GENES} && SOLR_TERMS_TSV=${SUGGEST_TERMS_RAW} '${NODE_BIN}' --max-old-space-size=16384 mongo2solr.join.js >/dev/null"
