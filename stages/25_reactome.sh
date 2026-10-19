@@ -47,6 +47,41 @@ else
   warn "missing ${ZMY_SUPP} — maize v5 genes will get EMPTY pathways (see docs/04-troubleshooting.md)"
 fi
 
+# ---- Oryza sativa japonica (OSA) supplement ---------------------------------
+# Rice had essentially NO pathways before this: 1 gene with a pathways key in r70 against 1,590 in
+# r69. Three facts, each measured:
+#   * Ensembl2PlantReactomeReactions.txt contains ZERO rice-keyed rows. Plant Reactome publishes
+#     rice reactions keyed on UNIPROT instead, in UniProt2PlantReactomeReactions.txt (3,431 Oryza
+#     rows, 1,773 distinct accessions).
+#   * gene_ids_by_pathway_and_species.tab -- which seeds the skeleton -- lists rice almost entirely
+#     as RAP-DB TRANSCRIPT ids (Os01t0649100-01, Os07t0695800-02). Only ONE rice row is in gene
+#     form. genes_to_pathways.json is consumed against GENE ids, so those can never join, and the
+#     364 empty rice keys in the artifact are exactly those transcript ids.
+#   * merged_lut.txt is the missing bridge: UniProt accession -> rice gene id, covering 1,614 of
+#     the 1,773 accessions and yielding 1,612 gene ids, of which 1,598 exist in this build.
+#
+# So translate the UniProt rows into the 6-column Ensembl2... shape. get_pathways.js CREATES a gene
+# when a reaction's id is absent from the skeleton (its `if (!genes.hasOwnProperty(fields[0]))`), so
+# these fill even though the .tab never mentions them in gene form.
+#
+# DERIVED on every run from the published files plus the lut, not carried as a static artifact like
+# the ZMY one -- so it tracks upstream instead of silently going stale. Appended after the curl, so
+# re-running is idempotent.
+OSA_LUT="${R}/merged_lut.txt"
+OSA_SUPP="${R}/Ensembl2PlantReactomeReactions_Osa.txt"
+if [ -s "${OSA_LUT}" ]; then
+  awk -F'\t' -v OFS='\t' '
+    NR==FNR { lut[$1] = $2; next }
+    $6 ~ /Oryza sativa/ && ($1 in lut) { print lut[$1], $2, $3, $4, $5, $6 }
+  ' "${OSA_LUT}" UniProt2PlantReactomeReactions.txt | sort -u > "${OSA_SUPP}"
+  n_osa="$(wc -l < "${OSA_SUPP}")"
+  [ "${n_osa}" -gt 0 ] || die "derived no OSA reaction lines from ${OSA_LUT} + UniProt2PlantReactomeReactions.txt — has the UniProt file's species column or the lut changed?"
+  cat "${OSA_SUPP}" >> Ensembl2PlantReactomeReactions.txt
+  ok "appended ${n_osa} Oryza sativa (OSA) reaction lines derived from merged_lut.txt"
+else
+  warn "missing ${OSA_LUT} — rice genes will get EMPTY pathways (this is the r69->r70 rice regression)"
+fi
+
 # ---- OPTIONAL: reuse another release's gene->pathway associations ----------
 # Steps 1 and 3 below are the only ContentService-dependent parts of this stage, and that service
 # goes down (2026-10-08: every /ContentService/data/* path hung for hours while the same host served
@@ -78,10 +113,10 @@ if [ -n "${REACTOME_REUSE_FROM:-}" ]; then
     [ "${a}" = "${b}" ] || die "upstream ${f} differs from ${SRC} (${a} vs ${b}) -- Plant Reactome has changed, so re-run this stage fully instead"
     ok "upstream unchanged: ${f}"
   done
-  a="$(grep -v 'R-ZMY' "${R}/Ensembl2PlantReactomeReactions.txt" | md5sum | cut -d' ' -f1)"
-  b="$(grep -v 'R-ZMY' "${SRC}/Ensembl2PlantReactomeReactions.txt" | md5sum | cut -d' ' -f1)"
+  a="$(grep -vE 'R-ZMY|R-OSA' "${R}/Ensembl2PlantReactomeReactions.txt" | md5sum | cut -d' ' -f1)"
+  b="$(grep -vE 'R-ZMY|R-OSA' "${SRC}/Ensembl2PlantReactomeReactions.txt" | md5sum | cut -d' ' -f1)"
   [ "${a}" = "${b}" ] || die "upstream Ensembl2PlantReactomeReactions.txt differs from ${SRC} (${a} vs ${b}) -- re-run this stage fully instead"
-  ok "upstream unchanged: Ensembl2PlantReactomeReactions.txt (ZMY rows excluded)"
+  ok "upstream unchanged: Ensembl2PlantReactomeReactions.txt (ZMY + OSA rows excluded)"
 
   # (b) the release-specific outputs this mode does NOT supply must already exist, from a previous
   # successful run of this stage against THIS release's genome set.
@@ -146,5 +181,34 @@ else
   cp genes_to_pathways.raw.json genes_to_pathways.json
 fi
 assert_valid_json genes_to_pathways.json
+
+# 5) assert the two supplements actually FILLED something, per species.
+#
+# "valid json with N keys" is not the property we care about, and it is how both failures here got
+# through: maize shipped 1,587 v5 genes whose pathways were `{}`, and rice shipped 364 keys that
+# were both empty AND keyed on transcript ids. In each case the artifact was well-formed and the
+# stage said ok. So check filled-ness by species, on GENE-form ids only.
+log "checking per-species pathway fill in genes_to_pathways.json"
+"${NODE_BIN}" --max-old-space-size=4096 -e '
+  const d = require(process.argv[1]);
+  const pat = { "maize v5 (Zm00001eb)": /^Zm00001eb\d+$/, "rice (Os..g..)": /^Os\d+g\d+$/ };
+  let bad = [];
+  for (const [label, re] of Object.entries(pat)) {
+    const keys = Object.keys(d).filter(k => re.test(k));
+    const filled = keys.filter(k => ((((d[k]||{}).annotations||{}).pathways||{}).entries||[]).length);
+    console.error("  " + label + ": " + filled.length + " filled of " + keys.length + " keys");
+    if (!filled.length) { bad.push(label); }
+  }
+  // Rice is also listed upstream as RAP-DB TRANSCRIPT ids, which can never join a gene-keyed
+  // consumer. Report them so the count is never mistaken for coverage.
+  const tx = Object.keys(d).filter(k => /^Os\d+t\d+/.test(k));
+  if (tx.length) { console.error("  note: " + tx.length + " rice keys are TRANSCRIPT ids (upstream shape; they cannot join genes)"); }
+  if (bad.length) { console.error("EMPTY: " + bad.join("; ")); process.exit(1); }
+' "${R}/genes_to_pathways.json" \
+  && ok "maize v5 and rice both have filled pathway entries" \
+  || die "a species supplement produced NO filled entries (see above).
+ maize needs ${ZMY_SUPP}; rice needs ${OSA_LUT} + the OSA rows derived from UniProt2PlantReactomeReactions.txt.
+ Both are appended to Ensembl2PlantReactomeReactions.txt earlier in this stage."
+
 ln -sf "${R}/genes_to_pathways.json" "${MONGODB_REPO}/search/genes_to_pathways.json"
 stage_end
