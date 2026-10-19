@@ -67,16 +67,37 @@ has the inflated values, because the same code built it. If anything in the UI d
       --data-urlencode 'q=category:"Genes: symbol/name"' \
       --data-urlencode 'fq=num_genes:[2 TO *]' -d 'rows=200&fl=num_genes,taxon_freq&wt=json'
 
-### 2. Rice `Os*` pathway keys with no entries — decide before announcing
+### 2. Rice pathway annotation is effectively ABSENT — decide before announcing
 
-`25_reactome.sh:7-10` deliberately skips the japonica/UniProt enhancement that fills these, so some
-rice genes carry a `pathways` key with an empty `entries`. `search69` has ~1,590 rice genes with
-pathways. Still a v69→v70 regression for rice if shipped as-is. To apply it, do the awk/pack munge
-from the original recipe against `merged_lut.txt` before `get_pathways.js` runs — the same insertion
-point the ZMY supplement uses. Verify the current count with:
+Worse than the previous revision recorded, and now precisely diagnosed.
+
+| | rice genes with pathway entries |
+| --- | --- |
+| `search69` | **1,590** |
+| `search70` | **1** — and that one gene's `entries` is empty |
+
+The mechanism itself works: wheat has 4,204 pathway-bearing genes, brassica 4,000, maize 1,518. It
+is rice specifically that is empty.
+
+**Why.** `reactome/genes_to_pathways.json` holds 364 rice keys, **all 364 with no entries**, and
+they are keyed on **transcript** ids rather than gene ids:
+
+    Os01t0649100-01   Os07t0695800-02   Os02t0621700-01   Os04t0394200-02
+
+Note the `t` and the `-01`/`-02` suffix — those are RAP-DB transcript identifiers.
+`search70.genes` is keyed on *gene* ids (`Os01g0649100`), so these can never join, which is why
+only one rice gene ends up with the key at all.
+
+**Fix.** This is the japonica/UniProt enhancement that `25_reactome.sh:7-10` deliberately skips —
+it is what maps the RAP-DB transcript ids onto gene ids and fills the entries. To apply it, do the
+awk/pack munge from the original recipe against `merged_lut.txt` before `get_pathways.js` runs,
+the same insertion point the ZMY maize supplement uses. Then re-run 25 → 50 → 60.
+
+**This is a visible v69→v70 regression for rice**, on a flagship genome, and it needs a decision
+before the release is announced. Verify with:
 
     mongo --quiet search70 --eval 'print(db.genes.count({system_name:"oryza_sativa", \
-      "annotations.pathways":{$exists:true},"annotations.pathways.entries.0":{$exists:false}}))'
+      "annotations.pathways.entries.0":{$exists:true}}))'    # r69 gives 1590
 
 ### 3. Remaining deployment steps
 
@@ -198,6 +219,7 @@ this file and destroyed the 267-core configuration — keep skipping it.
 | distinct `_terms` in `genes70` | 20,983,024, of which 2,526,566 appear in ≥2 genes |
 | `suggestions70` | 35,836,046 |
 | maize v5 pathway genes | 1,518 of 44,303 |
+| rice pathway genes | **1** (r69: 1,590) — see open item 2 |
 | medicago LeGOO annotation | 4,197 names + 4,388 descriptions; 24,024 expression docs projected |
 | live r69 core names | `genes69` (dir `genes69c`), `suggestions69` (dir `suggestions69b`) |
 
