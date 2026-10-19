@@ -62,7 +62,26 @@ if [ "${REGEN_SUGGEST:-0}" != "1" ] && [ -s genes.json ] && tail -c 3 genes.json
   log "reusing existing gene-level genes.json (set REGEN_SUGGEST=1 to regenerate)"
 else
   log "generating gene-level suggestions (genes.js)"
-  "${NODE_BIN}" ${BIG_HEAP} genes.js "${GENES_URL}" > genes.json
+  # genes.js no longer queries solr: it aggregates the (term, taxon_id) pairs that
+  # 60_solr_genes emitted from mongo2solr.join.js, sorted by term. SUGGEST_TERMS_TSV must point at
+  # the SORTED file. Previously genes.js recovered this by faceting the genes core -- a 588s pivot
+  # plus one unbounded facet per taxon (1083s for 267) -- which took 20 hours without finishing at
+  # release-70 scale and exited 0 with a truncated file when a q-io promise was lost.
+  SUGGEST_TERMS_RAW="${SOLR_TERMS_TSV:-${SOLR_DUMP_DIR:-${GENES}}/terms.tsv}"
+  SUGGEST_TERMS_TSV="${SUGGEST_TERMS_TSV:-${SUGGEST_TERMS_RAW%.tsv}.sorted.tsv}"
+  if [ ! -s "${SUGGEST_TERMS_TSV}" ]; then
+    [ -s "${SUGGEST_TERMS_RAW}" ] || die "no term/taxon pairs at ${SUGGEST_TERMS_RAW}.
+ 60_solr_genes writes them (SOLR_TERMS_TSV). To make them without re-running stage 60:
+   cd ${GENES} && SOLR_TERMS_TSV=${SUGGEST_TERMS_RAW} '${NODE_BIN}' --max-old-space-size=16384 mongo2solr.join.js >/dev/null"
+    log "sorting ${SUGGEST_TERMS_RAW} by term -> ${SUGGEST_TERMS_TSV}"
+    mkdir -p "$(dirname "${SUGGEST_TERMS_TSV}")/sorttmp"
+    LC_ALL=C sort -t$'\t' -k1,1 -S 8G --parallel=16 \
+      -T "$(dirname "${SUGGEST_TERMS_TSV}")/sorttmp" \
+      "${SUGGEST_TERMS_RAW}" > "${SUGGEST_TERMS_TSV}"
+    rmdir "$(dirname "${SUGGEST_TERMS_TSV}")/sorttmp" 2>/dev/null || true
+  fi
+  log "  terms: $(wc -l < "${SUGGEST_TERMS_TSV}") rows from ${SUGGEST_TERMS_TSV}"
+  "${NODE_BIN}" ${BIG_HEAP} genes.js "${GENES_URL}" --terms "${SUGGEST_TERMS_TSV}" > genes.json
 fi
 
 # Load gene-level suggestions FIRST, while the core is empty, via the streaming

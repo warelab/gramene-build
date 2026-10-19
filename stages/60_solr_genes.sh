@@ -131,7 +131,16 @@ if [ -s solr_genes.json ] && tail -c 3 solr_genes.json | grep -q ']' \
   log "reusing existing complete solr_genes.json ($(wc -c <solr_genes.json) bytes, ${want_lines} lines)"
 else
   log "converting mongo genes -> solr docs via mongo2solr.join.js (heap ${SOLR_HEAP})"
+  # SOLR_TERMS_TSV makes the same pass also write the (term, taxon_id) pairs that
+  # 65_solr_suggestions needs. Emitting them here is what lets genes.js stop faceting the genes
+  # core for a field this script derives from mongo -- 1,743s of round trip that was also the only
+  # part of stage 65 that ever failed. Same code path, so the terms cannot drift from what the
+  # genes core indexes.
+  export SOLR_TERMS_TSV="${SOLR_TERMS_TSV:-${SOLR_DUMP_DIR:-.}/terms.tsv}"
+  log "  also writing term/taxon pairs -> ${SOLR_TERMS_TSV}"
   "${NODE_BIN}" ${SOLR_HEAP} ./mongo2solr.join.js > solr_genes.json
+  [ -s "${SOLR_TERMS_TSV}" ] || die "mongo2solr.join.js produced no ${SOLR_TERMS_TSV}"
+  log "  term/taxon rows: $(wc -l < "${SOLR_TERMS_TSV}")"
   tail -c 3 solr_genes.json | grep -q ']' || die "mongo2solr.join.js did not finish (no closing ']') — check for genes lacking a canonical transcript"
 fi
 assert_nonempty_file solr_genes.json
