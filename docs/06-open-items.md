@@ -1,230 +1,225 @@
 # Open items
 
-Everything unfinished as of **2026-10-08**, with enough context to act without the conversation that
-produced it. Ordered by what blocks what.
+State as of **2026-10-19**, when the build reached `70_services` and the API went public.
 
-This release's pipeline was propagated from the SorghumBase v11 subsite on 2026-10-08; the
-`pre-v11-propagation-20261008` tag in each repo marks the state before it. The previous version of
-this file described v11's open items and has been replaced — see that tag if you need it.
-
----
-
-## Build status
-
-The build is **resuming**, not starting: it died at `45_homologs` on 2026-07-10 and the stages
-through `40_genes_dump` were banked and verified intact (267 maps, 170,249 genetrees, 267
-gzip-clean gene dumps, 9 aux collections).
-
-| stage | state |
-| --- | --- |
-| 00–40 | done (stamps restored after the propagation; outputs verified present) |
-| `45_homologs` | **done** — 9,083,100 gene docs / 964,496,164 homolog values |
-| `25_reactome` | **blocked** — Plant Reactome ContentService is down (see below) |
-| `55_atlas` | running |
-| `50`, `52`, `56`, `58`, `60`, `65`, `70` | not started |
-
-`50_genes_decorate` needs `25_reactome`, so the ContentService outage is on the critical path.
-
-### 1. Plant Reactome ContentService is down — blocks `25_reactome`
-
-`https://plantreactome.gramene.org/ContentService/data/*` hangs until timeout, while the same host
-answers `/` in 60 ms and serves `/download/current/...` normally. So the web server is up and the
-ContentService backend is not.
-
-**This is Gramene-operated infrastructure** — a restart on our side fixes it, which is faster than
-waiting.
-
-```bash
-curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' --max-time 25 \
-  'https://plantreactome.gramene.org/ContentService/data/species/all'   # 200 = up, 000 = hung
-```
-
-The stage failed *safely*: the empty `merge_into_taxonomy.json` tripped an invalid-JSON guard and
-`genes_to_pathways.json` was left untouched. The ZMY append is idempotent, so once the service is
-back, `make 25_reactome` is all that is needed.
-
-**Gate when it runs:** `Zm00001eb*` keys in `reactome/genes_to_pathways.json` should go from **0
-filled of 1,587** (the current, verified baseline) to about **1,518 of 1,675**. Test
-`annotations.pathways.entries` — every key has a wrapper object, so a truthy test reports success
-when nothing has changed.
+The previous revision was written on 2026-10-08, before most of the work, and by the time it was
+read again it was wrong in several places — three of its items had already been fixed and were
+chased anyway (see [A note on this document](#a-note-on-this-document)). Everything below is
+either verified against the live databases on 2026-10-19 or carries the command to verify it.
 
 ---
 
-## 2. Gene stable id collisions — 127,964 ids across two genome pairs
+## Build status: COMPLETE
 
-`<db>.genes` and the Solr core both key on the gene stable id, so where two genomes claim one the
-second write silently replaces the first. `40_genes_dump` now gates on this
-(`make check-stable-ids`); full background in
-[docs/04-troubleshooting.md](04-troubleshooting.md#two-genomes-claim-the-same-gene-stable-id).
+All stages `00_preflight` → `70_services` have stamps. Both services are online and the public
+API serves.
 
-### 2a. Wheat — 103,039 ids. A core regression with a prepared fix.
-
-`triticum_aestivum_alchemy_core_70_116_1` labels its genes `TraesCS*`, the **reference's**
-namespace; the r69 core for the identical annotation used `TraesALC*`. Proven a pure relabel: same
-assembly/accession/genebuild/gene count, and 106,786 of 106,786 genes join across the two cores on
-the prefix swap with identical coordinates. Compara confirms the namespace is the reference's — no
-alchemy genome_db and no `TraesALC*` members in either `_69_114` or `_70_116`, while all 107,545
-`TraesCS*` `gene_member` rows belong to genome_db 2102.
-
-**This is the one that already shipped**: in `search69`, alchemy owns the `TraesCS*` ids and
-reference wheat serves **17,705 of its 120,744 genes**. An audit of all 233 r69 genomes found wheat
-to be the only one >1% short.
-
-**Fix:** [`build/fix_alchemy_stable_ids.sql`](../fix_alchemy_stable_ids.sql) renames
-`TraesCS*` → `TraesALC*` across `gene`, `transcript`, `translation` and `exon` (868,839 rows;
-the prefix occurs nowhere else — `stable_id_event`, `gene_archive`, xref, the `*_attrib` tables and
-`protein_align_feature` are all clean). Its three read-only queries are tested; the four `UPDATE`s
-need a writer account, as the build's `gramene_web` is read-only.
-
-Downstream cost is small: alchemy is not in compara, so no trees or homologs change and no taxon
-ids move. Re-dump that one genome (~107k genes, minutes), then run stage 50. Reference wheat will
-be complete for the first time since r69.
-
-### 2b. Legumes — 24,925 ids. Needs a decision.
-
-`medicago_truncatula` (all 50,739 genes) and `lablab_purpureus_gca030347555v1cm` (24,972 of 25,505)
-both use placeholder `geneNNNN` ids. **Not** a regression: medicago's `_69_114_3` and `_70_116_3`
-cores are identical in this respect, the proper `MTR_*` ids having been lost at the
-MedtrA17_4.0 → MtrunA17r5.0_ANR assembly switch, before r69. r69 escaped the collision only because
-it did not host lablab.
-
-Compara **contains both** (genome_db 2282 and 2308) with the colliding ids, distinguishing them by
-`genome_db_id` alone — so unlike wheat there is no correct prefix to restore, and any rename we
-invent has to be applied consistently to the compara reads in `35_genetrees` and `45_homologs` too.
-
-Options, in the order I would weigh them: get real stable ids assigned upstream; or qualify one
-genome's whole id space in the pipeline (~25k genes, with `alt_id` keeping the bare id searchable);
-or accept the loss via `STABLE_ID_COLLISION_ALLOW` and record which genome wins. **Stage 50 is
-blocked on this** even after the wheat fix, because both genomes are in the current set.
-
----
-
-## 3. 364 rice `Os*` pathway keys are empty — a v69 regression
-
-`search69.genes` has ~1,590 rice genes with pathways; this release's artifact has 364 rice keys with
-**no** pathway entries, because the japonica/UniProt enhancement that fills them is deliberately
-skipped (`25_reactome.sh:7-10`).
-
-**Decide before publishing.** Shipping as-is is a visible regression against r69 for rice. To apply
-it, do the awk/pack munge from the original recipe against `merged_lut.txt` before
-`get_pathways.js` runs — the same insertion point the ZMY supplement uses.
-
----
-
-## 4. saved_search will restore 0 of 14 — expected, recorded here so it isn't read as a bug
-
-`genes69` carries `saved_search` tags on **14 documents across 8 hashes**, and **none of those
-hashes exists in any `genelists` collection** — all 62 surviving lists are `site:'sorghum'`. The
-restore tool correctly keeps only hashes with surviving metadata, so it will report 0.
-
-The orphaned hashes, for the record:
-
-| hash | tagged docs |
-| --- | --- |
-| 632734279 | 2 |
-| 796382183 | 3 |
-| 1654857188 | 3 |
-| 2031365501 | 1 |
-| 2816589576 | 4 |
-| 3132912727 | 4 |
-| 3181543302 | 2 |
-| 4102227627 | 1 |
-
-The tooling was propagated anyway because it protects the *next* rebuild — and because the main
-release has had no gene-list API at all until the swagger merge in this propagation, so there was
-nothing to restore *into* before now.
-
----
-
-## 5. Deployment steps not done
-
-`70_services` has not run. When it does it prints the full checklist; these are the ones that need a
-human:
-
-* **Apache reverse proxy** on gorgonzola (`conf/extra/httpd-ssl.conf`, under `data.gramene.org`):
-  `/v70` → `squam:10070`, then `apachectl configtest && apachectl graceful`
-* **Firewall** — open 10070 (swagger) and 11070 (ebeye)
-* **Ensembl REST registry** — add this release's databases to
-  `/usr/local/ensembl-87/ensembl-rest/reg.pm` using `make_reg_pm.js` + `merge_reg_pm.pl`; do not
-  hand-edit the shared file. Note the registry is **not** what the build uses for maps QC (that is
-  `https://rest.ensembl.org`), but it is what the genome browser and BLAST need.
-* **BLAST** — `ensure_blast.pl` with the updated registry, then restart `gramene-blast` under pm2
-* **Gene-tree curation UI** (`gramene-genetree-vis`) — point its default server at the v70 swagger
-
-**Never `pm2 restart all`.** 59 processes on this host, several deliberately stopped.
-
----
-
-## 6. maps QC over-reports failures against the public REST
-
-`ENSEMBL_REST` is now `https://rest.ensembl.org`, which is the only endpoint that resolves this
-release's genomes (measured: 267/267, versus 0 for `localhost:3000` and 18 for the SorghumBase
-pan-site). But `maps/check_maps_in_ensembl_rest.js` has a concurrency-limited pool with **no retry
-and no backoff**, and the public service rate-limits — a 25-genome sample produced 9 HTTP 500s in
-one contiguous burst, all of which returned 200 when retried spaced out.
-
-So the QC report will name genomes as unresolvable that are perfectly fine. It is non-fatal
-(`|| warn`) and stage 10 is already banked, so nothing is blocked. Fixing it means adding retry with
-`Retry-After` handling to that script.
-
----
-
-## 7. Housekeeping
-
-### `/solr`
-
-151 GB was reclaimed by unloading the three unserved `genes69*` cores (82 GB free → 232 GB). Still
-present and **not** reclaimed:
-
-* `/solr/data/suggestions69` (1.5 GB) and `/solr/data/suggestions69.1` (1.4 GB) — the live
-  suggestions core is the one **named** `suggestions69`, whose instanceDir is
-  `/solr/data/suggestions69b`. Only ~2.9 GB, so not urgent.
-* The three unloaded `genes69*` directories remain as ~700 KB `conf/` stubs. Harmless —
-  `core.properties` is gone, so they are not re-discovered as cores on restart.
-
-⚠️ Core names do **not** match their directories on this host. Resolve the mapping from
-`/solr/admin/cores?action=STATUS` and unload by **name** before deleting anything.
-
-### `ensembl_db_info.json` tracks a plaintext MySQL password
-
-`gramene-mongodb/ensembl_db_info.json` contains a `pass` field and **is tracked in git**. This was
-flagged in v11's open items and is still true. It is also the curated record of this release's 267
-cores, so it cannot simply be removed — the fix is to externalise the credential and keep the
-database set. Note that one propagated-but-skipped commit would have *regenerated* this file and
-destroyed the 267-core configuration; keep skipping it.
-
-### Untracked / uncommitted
-
-| repo | file | disposition |
+| artifact | value | cross-check |
 | --- | --- | --- |
-| `build` | `stages/57_jgi_expression.sh` | orphaned sorghum JGI expression stage; not referenced by the Makefile. Delete unless the main release takes on a non-EBI expression source. |
-| `gramene-mongodb` | `jgi/` | same provenance; delete with the above |
-| `gramene-mongodb` | `search/tmp_homologs/` | **keep** — 15 GB of compara dumps plus the sorted flatfile; `45_homologs` resumes from these |
-| `gramene-mongodb` | `trees/inserts.jsonl` | build scratch; delete |
-| all | `package-lock.json` | npm churn from `05_install`; ignore or commit, not meaningful here |
+| `search70.genes` | 16,127,051 | == `sum(maps.num_genes)` |
+| `solr genes70` | 16,127,051 | == mongo |
+| `search70.homologs` | 13,786,532 docs / 2,091,049,122 values | 98.9% of compara's 1,057,465,164 homologies |
+| `search70.genetree` | 224,197 over 5 tree sets | gene_tree 170,249 + barley 12,114 + oat 12,833 + wheat 12,752 + rice 16,249 |
+| `search70.expression` | 1,371,654 | incl. 24,024 projected medicago |
+| `expression_attributes` | 1,016,275 over 24 genomes | jsonl lines == docs loaded |
+| `solr suggestions70` | 35,836,046 | r69 had 37,287,102 (different gene set; not comparable) |
+| `search70.maps` | 267 genomes | |
+
+Live: `https://data.gramene.org/v70/swagger` → 200, `pm2` `gramene_swagger70` (10070) and
+`gramene_ebeye70` (11070) both online.
 
 ---
 
-## 8. Flagged, not fixed: the v10b mis-pin
+## Resolved since the last revision
 
-`subsites/sorghum/v10b/gramene-mongodb/package.json:29` pins the config at `#sorghum_v11`, and its
-`node_modules` copy resolves to **`sorghum11`**. Any ETL run from that repo writes to the wrong
-database. Left alone deliberately — it is a live site and outside this release's scope — but it is
-exactly the failure mode the `file:../` dependency exists to prevent, and it should be fixed before
-anyone runs a build from that tree.
+Listed so the next reader does not re-investigate them. Each says what the evidence was.
+
+* **Plant Reactome ZMY fix — proven.** `25_reactome` ran once the ContentService came back.
+  **1,518 of 44,303** `zea_mays` genes carry pathway entries, matching the predicted gate. Both
+  `search69` and `sorghum11` show 0 here, so this is the first build to actually demonstrate it.
+* **Gene stable id collisions — gone.** Alchemy wheat was renamed `TraesCS*` → `TraesALC*` in the
+  core (868,839 rows); medicago and lablab were given their community ids in the cores *and*
+  compara. The `40_genes_dump` gate now passes clean: **16,127,051 ids extracted, 16,127,051
+  distinct, 0 claimed by more than one genome**. Both defects are written up for upstream in
+  [07-upstream-defects.md](07-upstream-defects.md).
+* **`_terms` stored="true"** — already fixed by `dab1932` (landed here as `fcb3138`). The previous
+  revision said it was `stored="false"`; it was not. `60_solr_genes` now also *refuses* any schema
+  with an indexed-but-unrecoverable field before building the core.
+* **All four claimed `70_services` defects** — `BASEPATH`, the title, the `solr.js` rewrite and the
+  checklist were already correct and parameterised. What the stage *did* lack is in `e1a09f5`.
 
 ---
 
-## 9. Known-good baselines for comparison
+## Open
 
-Useful when something downstream looks wrong:
+### 1. `suggestions70` `taxon_freq` is now correct, and therefore differs from r69
+
+The old Solr-facet path double-counted: each taxon's count was added once from the
+`_terms,taxon_id` pivot and again in the per-taxon loop, while `num_genes` was incremented only
+once. Audited over 3,000 multi-gene docs in the old output: **2,285 wrong, mostly exactly 2.0×**.
+The new build has 0 wrong (`sum(taxon_freq) == num_genes` for all sampled).
+
+**So multi-gene suggestion frequencies are roughly half what the live r69 site shows.** Release 69
+has the inflated values, because the same code built it. If anything in the UI displays or sorts on
+`taxon_freq`, expect a visible change, and do not treat a side-by-side difference as a regression.
+
+    curl -s --get localhost:8983/solr/suggestions70/select \
+      --data-urlencode 'q=category:"Genes: symbol/name"' \
+      --data-urlencode 'fq=num_genes:[2 TO *]' -d 'rows=200&fl=num_genes,taxon_freq&wt=json'
+
+### 2. Rice `Os*` pathway keys with no entries — decide before announcing
+
+`25_reactome.sh:7-10` deliberately skips the japonica/UniProt enhancement that fills these, so some
+rice genes carry a `pathways` key with an empty `entries`. `search69` has ~1,590 rice genes with
+pathways. Still a v69→v70 regression for rice if shipped as-is. To apply it, do the awk/pack munge
+from the original recipe against `merged_lut.txt` before `get_pathways.js` runs — the same insertion
+point the ZMY supplement uses. Verify the current count with:
+
+    mongo --quiet search70 --eval 'print(db.genes.count({system_name:"oryza_sativa", \
+      "annotations.pathways":{$exists:true},"annotations.pathways.entries.0":{$exists:false}}))'
+
+### 3. Remaining deployment steps
+
+Apache proxy and firewall are **done** (`/v70` → squam:10070 verified end to end). Left:
+
+* **Ensembl REST registry** — add this release's 267 cores + compara to
+  `/usr/local/ensembl-87/ensembl-rest/reg.pm` via `make_reg_pm.js` + `merge_reg_pm.pl`; do not
+  hand-edit the shared file. Needed by the genome browser and BLAST, *not* by the API.
+* **BLAST** — `ensure_blast.pl` against the updated registry, then restart `gramene-blast` under pm2.
+* **gene-tree curation UI** (`gramene-genetree-vis`) — point `defaultServerSb` at
+  `https://data.gramene.org/v70/swagger`.
+
+⚠️ **Never `pm2 restart all`** — 61 processes on this host, 10 deliberately stopped.
+
+**How is ebeye exposed?** `https://data.gramene.org/ebeye69/` returns 404, so r69's ebeye is not
+proxied under that path and port 11070's external reachability is untested. Worth settling before
+anything depends on it.
+
+### 4. `saved_search` will restore 0 of 14 — expected, not a bug
+
+`genes69` carries tags on 14 docs across 8 hashes and **none of those hashes exists in any
+`genelists` collection** — all surviving lists are `site:'sorghum'`. The restore tool correctly
+keeps only hashes with surviving metadata. Orphaned hashes: 632734279, 796382183, 1654857188,
+2031365501, 2816589576, 3132912727, 3181543302, 4102227627.
+
+### 5. maps QC over-reports failures against the public REST
+
+`maps/check_maps_in_ensembl_rest.js` has a concurrency-limited pool with no retry and no backoff,
+and `https://rest.ensembl.org` rate-limits — a 25-genome sample produced 9 HTTP 500s in one burst,
+all of which returned 200 when retried spaced out. Non-fatal (`|| warn`). Fixing it means adding
+retry with `Retry-After` handling.
+
+### 6. Capacity — three filesystems and one Redis worth watching
+
+* **`/` is 20 GB and `/tmp` lives on it.** It hit 100% (5.4 MB free) on 2026-10-19 because a
+  multi-GB test file was written to `/tmp`. `/usr` alone is 10.5 GB, so `/tmp` has ~7 GB of real
+  headroom. **Put large intermediates on `/scratch`.**
+* **`/usr/local` is at 96% (98 GB free).** `60_solr_genes` needs **~265 GB** of intermediates
+  (`solr_genes.json` ~131 GB plus `solr_genes.attribs.json` ~131 GB, both present at once) and now
+  refuses to start without the room — use `SOLR_DUMP_DIR=/scratch/...`.
+* **`/solr`**: 178 GB free. `genes70` 2.9 GB + `suggestions70` 2.9 GB. ~275 GB is reclaimable in 65
+  directories that are not the `instanceDir` of any loaded core. ⚠️ Resolve by **`instanceDir` from
+  the STATUS API**, never by name: the core *named* `genes69` lives in `genes69c`, so deleting the
+  directory called `genes69` is safe while deleting `genes69c` destroys the live r69 index. And
+  `solr.xml`, `zoo.cfg`, `filestore` and `userfiles` are not cores.
+* **Redis** holds 22 GB with **`maxmemory` unset, `noeviction`, and no AOF**, across 8.9 M keys in
+  db1–db4. An unbounded dataset there takes the box down rather than degrading, and a restart loses
+  everything until a rebuild. Settle a budget before putting anything load-bearing in it.
+
+### 7. A connection leak was stopped but not root-caused
+
+pm2 process `auth_testing` (`/home/olson/src/warelab/gramene-swagger`, a dev checkout proxied from
+`data.sorghumbase.org/auth_testing`) held **2,929** mongo connections and was creating **~31,000 per
+minute**, with 11,123 sockets in TIME-WAIT and established connections growing ~150/min. mongod's
+`totalCreated` was 53.9 M over 78 days. Stopping it dropped `connections.current` from 3,145 to 142
+and the creation rate to 1/min.
+
+It was leaking **with zero inbound traffic**, so it is an internal loop or a per-operation client
+that never closes, not request volume. It also showed 359 pm2 restarts. Files touching mongo there:
+`api/helpers/mongo.js`, `api/controllers/mongo.js`, `api/controllers/gxa.js`. Also:
+`/var/log/mongodb/mongod.log` is 306 MB with no rotation.
+
+### 8. JGI sorghum expression is loaded but deliberately not scored
+
+`57_jgi_expression` loaded 4 experiments / 99 assays / 34,118 genes into `search70`
+(`source: "JGI"`). `58_expression_attributes` **excludes** it via `EXPR_SOURCES=EBI`, so `tau`,
+`breadth` and the level bands stay on GXA-only input. Verified: loading it left all 34,118 sorghum
+`expression_attributes` docs byte-identical (md5 `5ceae8ab487bb40bd8b180d3b7cd1a09`).
+
+Two independent reasons to keep it excluded, both in
+[../../gramene-mongodb/jgi/README.md](../../gramene-mongodb/jgi/README.md):
+
+1. **No citation.** All 288 libraries claim `publication.status = published` but give no DOI or
+   PMID; the description still reads "Submitted via JGI; awaiting citation."
+2. **Its group values are means, where every other source's are medians.** GXA ships a five-number
+   summary per assay group and `parseBaseline.js` takes the median; the JGI matrix arrives
+   pre-aggregated as one *mean* per group, and library-level values never reach us. Measured over
+   1.9 M GXA assay-group cells, right skew beats left 48.5%/31.4%, so those means sit high. And 56
+   of its 99 groups are stem, so the bias lands almost entirely on one organ whose median would
+   also be set by a single lab under one set of growth conditions.
+
+To include it once the submitter supplies group medians:
+`EXPR_SOURCES="EBI,JGI" make 58_expression_attributes`, then 60/62/65.
+
+### 9. Upstream defects reported, not fixed upstream
+
+Six verified defects in Ensembl Plants 70 / compara are written up in
+[07-upstream-defects.md](07-upstream-defects.md). The one with no local workaround:
+**medicago and lablab are in compara's `default` trees with zero homology rows** — 0 of 69,421
+genes appear in `homology_member`, against 98% participation for a comparable genome. No
+orthologues can be shown or exported for those genomes.
+
+### 10. Flagged, not fixed: the v10b mis-pin
+
+`subsites/sorghum/v10b/gramene-mongodb/package.json:29` pins the config at `#sorghum_v11` and its
+`node_modules` copy resolves to **`sorghum11`**, so any ETL run from that repo writes to the wrong
+database. Left alone deliberately — live site, outside this release — but fix it before anyone runs
+a build from that tree.
+
+### 11. `ensembl_db_info.json` tracks a plaintext MySQL password
+
+`gramene-mongodb/ensembl_db_info.json` contains a `pass` field and **is tracked in git**. It is also
+the curated record of this release's 267 cores, so it cannot simply be removed: externalise the
+credential and keep the database set. One propagated-but-skipped commit would have *regenerated*
+this file and destroyed the 267-core configuration — keep skipping it.
+
+---
+
+## Known-good baselines
 
 | thing | value |
 | --- | --- |
-| expected `genes70` / `search70.genes` | 16,127,051 (= `sum(maps.num_genes)`) |
+| `search70.genes` / `genes70` | 16,127,051 |
 | `search69.genes` | 11,773,843 |
-| `search70.homologs` | 9,083,100 docs / 964,496,164 values |
-| `search70.genetree` | 170,249 (all real `EPlGT*` ids — no synthetic prefixes) |
-| `search70.maps` | 267 genomes |
-| maize pathway genes, once 25 re-runs | ~1,518 of 44,303 (`zea_mays`, B73 v5) |
+| `search70.homologs` | 13,786,532 docs / 2,091,049,122 values |
+| compara homologies kept | 1,046,239,795 of 1,057,465,164 (98.9%) |
+| `Os01g0517500` homologs | 278 — equals its compara row count (r69: 239; the broken build: 42) |
+| `search70.genetree` | 224,197 across 5 sets |
+| distinct `_terms` in `genes70` | 20,983,024, of which 2,526,566 appear in ≥2 genes |
+| `suggestions70` | 35,836,046 |
+| maize v5 pathway genes | 1,518 of 44,303 |
+| medicago LeGOO annotation | 4,197 names + 4,388 descriptions; 24,024 expression docs projected |
 | live r69 core names | `genes69` (dir `genes69c`), `suggestions69` (dir `suggestions69b`) |
+
+---
+
+## A note on this document
+
+The previous revision was ten days old and wrong in three places that cost real time: it said
+`_terms` was `stored="false"` (already fixed), and it listed four `70_services` defects (all four
+already fixed, each with a comment explaining the trap). Both were chased before being checked.
+
+So: **when an item here is acted on, verify it against the live system first**, and when it is
+resolved, move it to *Resolved since the last revision* with the evidence rather than deleting it.
+An item that silently disappears is indistinguishable from one nobody looked at.
+
+The same lesson runs through the gates added during this build — each exists because something
+reported success while being wrong:
+
+| gate | asserts, instead of |
+| --- | --- |
+| `dump_compara_tables.sh` | row counts == table, instead of `gzip -t` passing |
+| `45_homologs` | cross-species orthology present, instead of a non-empty collection |
+| `52_tree_domains` | leaf decoration per tree set, instead of "updated N trees" |
+| `60_solr_genes` | schema is atomic-update safe *before* the hours-long build; and that there is disk room |
+| `70_services` | the public spec serves before ebeye starts; and stability, instead of a listener |
