@@ -211,6 +211,49 @@ want="$(mongo_count genes)"
 got="$(solr_numdocs "${SOLR_GENES_CORE}")"
 log "solr ${SOLR_GENES_CORE} numDocs=${got} ; mongo genes=${want}"
 [ "${got}" = "${want}" ] && ok "solr genes count matches mongo" || warn "solr genes (${got}) != mongo genes (${want})"
+
+# ── GATE: the docs must be FRESH, not merely the right number ────────────────────────────────
+# The count above passes just as happily when the load wrote nothing: a re-load into an already
+# full core is exactly as many docs as mongo has. That is how solr_chunk_load's old auto-skip
+# (fixed in e4436b7) could no-op a whole rebuild and still stamp this stage done. So compare
+# CONTENT that only a real load can produce.
+#
+# 1) Ordering: the lowest gene_idx in solr must belong to the genome mongo ranks species_idx=1.
+#    mongo2solr assigns gene_idx by sorting on species_idx, so a stale core fails this whenever
+#    the ranking changed -- which is precisely when a silent no-op matters most.
+want_first="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
+  'var g=db.genes.findOne({species_idx:1},{system_name:1}); print(g?g.system_name:"")' 2>/dev/null | tr -d '\r')"
+got_first="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=*:*&rows=1&sort=gene_idx+asc&fl=system_name&wt=json" \
+  | sed -n 's/.*"system_name":"\([^"]*\)".*/\1/p' | head -1)"
+if [ -n "${want_first}" ] && [ "${want_first}" = "${got_first}" ]; then
+  ok "solr gene_idx ordering agrees with mongo species_idx (first genome: ${got_first})"
+elif [ -z "${want_first}" ]; then
+  warn "no genome has species_idx=1 in mongo — cannot check ordering freshness"
+else
+  die "STALE CORE: solr's lowest gene_idx is '${got_first}' but mongo ranks '${want_first}' first.
+ The load did not take effect (see solr_chunk_load's SOLR_RESUME/SKIP_DOCS), or decorate and the
+ solr load disagree. Re-run after confirming the load actually sent docs."
+fi
+
+# 2) Tree sets: every homology set that exists in mongo must be non-empty in solr. Catches a
+#    mapper that silently stops emitting a field (the cultivar tree ids were missing from solr
+#    entirely until 0905463, because the emit block lived in the unused mongo2solr.js).
+# One mongosh call for all five sets, and deliberately NOT $exists:true. The homology.<set>.id
+# indexes are not sparse, so each carries an entry for all 16.1M genes with nulls sorting first;
+# $exists:true must walk past ~11.7M null entries to reach the first real one and takes >100s per
+# set. {$gt:""} seeks straight to the first string: 0.12s, and the whole check runs in under a
+# second instead of ~17 minutes.
+sets_in_mongo="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
+  'var out=[]; ["gene_tree","barley","oat","wheat","rice"].forEach(function(s){
+     var q={}; q["homology."+s+".id"]={$gt:""};
+     if (db.genes.find(q).limit(1).size() > 0) out.push(s); }); print(out.join(" "))' 2>/dev/null | tr -d '\r')"
+log "homology sets present in mongo: ${sets_in_mongo:-<none>}"
+for set in ${sets_in_mongo}; do
+  sn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${set}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
+  [ "${sn:-0}" -gt 0 ] 2>/dev/null \
+    && ok "  tree set ${set}: ${sn} genes in solr" \
+    || die "tree set '${set}' exists in mongo but NO solr doc carries it — the mapper is not emitting it"
+done
 # report how many genes carry each merged capability
 for cap in MAKER VEP expression_attributes; do
   n="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=capabilities:${cap}&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
