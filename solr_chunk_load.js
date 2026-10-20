@@ -53,8 +53,29 @@ async function post(docLines, commit) {
 }
 
 (async () => {
-  const skip = await numFound();
-  if (skip) console.error(`resuming: core ${core} already has ${skip} docs — skipping that many doc-lines`);
+  // How many leading doc-lines to skip.
+  //
+  // This USED to be `await numFound()` unconditionally, which is only right when resuming an
+  // interrupted load of THIS file. It cannot tell that case apart from a deliberate re-load into a
+  // core that is already full -- and in that case numFound equals the file's doc count, so every
+  // single line is skipped and the load silently becomes a no-op. Stage 60 then still passes its
+  // "core count == mongo count" gate (the stale docs are counted) and stamps success, so a rebuild
+  // meant to publish new field values ships the OLD ones with no error anywhere.
+  //
+  // So: skip NOTHING by default. Docs are upserts by uniqueKey, so re-sending them all is correct,
+  // just slower. Resume is now opt-in: SOLR_RESUME=1 to auto-detect, or SKIP_DOCS=N to force.
+  let skip = 0;
+  if (process.env.SKIP_DOCS !== undefined && process.env.SKIP_DOCS !== '') {
+    skip = parseInt(process.env.SKIP_DOCS, 10) || 0;
+    console.error(`SKIP_DOCS=${skip}: skipping that many doc-lines`);
+  } else if (process.env.SOLR_RESUME === '1') {
+    skip = await numFound();
+    console.error(`SOLR_RESUME=1: core ${core} has ${skip} docs — skipping that many doc-lines`);
+  } else {
+    const have = await numFound();
+    console.error(`full load into ${core} (it currently has ${have} docs; every doc-line will be `
+                  + `sent as an upsert). Set SOLR_RESUME=1 to resume an interrupted load instead.`);
+  }
   const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
   let seen = 0, batch = [], total = 0, batches = 0;
   for await (const line of rl) {
