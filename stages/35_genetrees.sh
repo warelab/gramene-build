@@ -17,21 +17,26 @@ cmp_taxa="$(mongo_eval "db.taxonomy.countDocuments({subset:'compara'})")"
 # becomes genes.homology.<tree_set> in the decorate, so a consumer reads the homology object's keys
 # to learn which trees a gene is in.
 #
-# Only trees with a published stable_id are taken. That is every tree for 'default', but the crop
-# cultivar clustersets also hold ~162k smaller unnamed fragments which are deliberately excluded.
+# EVERY tree of each clusterset is taken. 'default' has a published stable_id on all 170,253, but
+# the cultivar clustersets carry 162,111 trees with no stable_id beside 54,034 published ones.
+# Those unnamed trees used to be excluded as "fragments"; they are included now because excluding
+# them left 3,821,574 genes holding homologous_genes with no tree at all, and because the fragment
+# assumption fails in the tail (1,615 unnamed trees have 250+ leaves, averaging 1,056).
 #
 # The crop ids are rewritten from the clusterset prefix compara ships
 # (barley_cultivars_PTHR10000_SF7) to a Gramene one (EplBarleyGT_PTHR10000_SF7), keeping the
 # PANTHER/TreeFam family part so an id stays traceable upstream. 'default' keeps its EPlGT* ids,
-# which are already meaningful.
+# which are already meaningful. An unnamed tree gets <prefix>root<root_id>, which does NOT survive
+# a compara release the way a family-based id does -- see genetree.js for that caveat.
 #
+# Expected counts are now ALL trees of the clusterset (tree_type='tree'), not just the named ones.
 #        tree_set | clusterset       | id prefix     | expected trees
 TREE_SETS=(
   "gene_tree|default||170253"
-  "barley|barley_cultivars|EplBarleyGT_|12167"
-  "oat|oat_cultivars|EplOatGT_|12846"
-  "wheat|wheat_cultivars|EplWheatGT_|12772"
-  "rice|rice_cultivars|EplRiceGT_|16249"
+  "barley|barley_cultivars|EplBarleyGT_|87626"
+  "oat|oat_cultivars|EplOatGT_|60915"
+  "wheat|wheat_cultivars|EplWheatGT_|38737"
+  "rice|rice_cultivars|EplRiceGT_|28867"
 )
 
 mongo_drop genetree
@@ -45,9 +50,11 @@ for spec in "${TREE_SETS[@]}"; do
     run "${NODE_BIN}" ${BIG_HEAP} genetree.js
   after="$(mongo_count genetree)"
   got=$(( after - before ))
-  # Bounded on BOTH sides. Too few means the clusterset name or the stable_id filter moved
-  # upstream. Too many means the per-set env did not reach genetree.js and it rebuilt 'default'
-  # again -- which a lower bound alone cannot see, because 'default' is larger than every crop set.
+  # Bounded on BOTH sides. Too few means the clusterset name moved upstream, or a stable_id
+  # filter crept back in and dropped the unnamed trees again. Too many means the per-set env did
+  # not reach genetree.js and it rebuilt 'default' again -- which a lower bound alone cannot see.
+  # That upper guard still works now that the crop sets are larger: 'default' (170,253) is above
+  # every crop set's hi bound, the largest being barley at 87,626 * 3/2 = 131,439.
   lo=$(( want * 9 / 10 )); hi=$(( want * 3 / 2 ))
   if [ "${got}" -lt "${lo}" ]; then
     die "tree set '${ts}': only ${got} trees loaded, expected ~${want} — check clusterset_id upstream"
