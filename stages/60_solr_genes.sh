@@ -126,7 +126,24 @@ if [ "${avail_gb}" -lt "${need_gb}" ]; then
  exists so that cannot happen silently again."
 fi
 ok "space for intermediates confirmed (${avail_gb} GB free >= ~${need_gb} GB needed)"
-if [ -s solr_genes.json ] && tail -c 3 solr_genes.json | grep -q ']' \
+# Is the existing dump stale? Size and line count say the file is COMPLETE, not that it is
+# CURRENT -- and the line count cannot tell, because it is one line per gene and the gene set
+# barely moves between builds. Reusing it loaded the previous release's field values into the
+# core while every other check passed: 3,949,479 cultivar tree memberships added in mongo by
+# 7ab87c9 never reached solr, because this file was 2 days old and 32,254,103 lines either way.
+# The attribute merge below already had this check; the dump it depends on did not.
+#
+# Compare against the gene collection (its stage stamp) and against the mapper that writes the
+# file, so a change to either input invalidates it. -nt follows symlinks, so relocating the
+# intermediates with SOLR_DUMP_DIR does not defeat this.
+genes_stale=0
+for dep in "${BUILD_DIR}/.state/50_genes_decorate.done" ./mongo2solr.join.js; do
+  if [ -e "${dep}" ] && [ -e solr_genes.json ] && [ "${dep}" -nt solr_genes.json ]; then
+    log "input newer than solr_genes.json: $(basename "${dep}") — will regenerate"
+    genes_stale=1
+  fi
+done
+if [ "${genes_stale}" -eq 0 ] && [ -s solr_genes.json ] && tail -c 3 solr_genes.json | grep -q ']' \
    && [ "$(wc -l < solr_genes.json)" = "${want_lines}" ]; then
   log "reusing existing complete solr_genes.json ($(wc -c <solr_genes.json) bytes, ${want_lines} lines)"
 else
@@ -248,11 +265,21 @@ sets_in_mongo="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
      var q={}; q["homology."+s+".id"]={$gt:""};
      if (db.genes.find(q).limit(1).size() > 0) out.push(s); }); print(out.join(" "))' 2>/dev/null | tr -d '\r')"
 log "homology sets present in mongo: ${sets_in_mongo:-<none>}"
+# Compare COUNTS, not just presence. A >0 check passes on a core that is merely old: every set
+# was non-empty while solr still held 3,949,479 fewer memberships than mongo. These should match
+# exactly -- the mapper emits the field for every gene that has it -- so any gap is a real defect
+# (stale dump, stale core, or a mapper that stopped emitting).
 for set in ${sets_in_mongo}; do
+  mn="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
+    "print(db.genes.count({'homology.${set}.id':{\$gt:''}}))" 2>/dev/null | tr -d '\r')"
   sn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${set}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
-  [ "${sn:-0}" -gt 0 ] 2>/dev/null \
-    && ok "  tree set ${set}: ${sn} genes in solr" \
-    || die "tree set '${set}' exists in mongo but NO solr doc carries it — the mapper is not emitting it"
+  if [ "${sn:-0}" = "${mn:-x}" ]; then
+    ok "  tree set ${set}: ${sn} genes, matches mongo"
+  else
+    die "tree set '${set}': solr has ${sn:-0} genes but mongo has ${mn:-?}.
+ The core does not reflect the gene collection. Usual cause is a stale solr_genes.json being
+ reused, or a load that did not take effect; check the 'reusing existing complete' line above."
+  fi
 done
 # report how many genes carry each merged capability
 for cap in MAKER VEP expression_attributes; do
