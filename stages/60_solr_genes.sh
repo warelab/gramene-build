@@ -239,7 +239,7 @@ log "solr ${SOLR_GENES_CORE} numDocs=${got} ; mongo genes=${want}"
 #    mongo2solr assigns gene_idx by sorting on species_idx, so a stale core fails this whenever
 #    the ranking changed -- which is precisely when a silent no-op matters most.
 want_first="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
-  'var g=db.genes.findOne({species_idx:1},{system_name:1}); print(g?g.system_name:"")' 2>/dev/null | tr -d '\r')"
+  'var g=db.genes.findOne({species_idx:1},{system_name:1}); print(g?g.system_name:"")' 2>/dev/null | tr -d '\r' | tail -1)"
 got_first="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=*:*&rows=1&sort=gene_idx+asc&fl=system_name&wt=json" \
   | sed -n 's/.*"system_name":"\([^"]*\)".*/\1/p' | head -1)"
 if [ -n "${want_first}" ] && [ "${want_first}" = "${got_first}" ]; then
@@ -263,15 +263,20 @@ fi
 sets_in_mongo="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
   'var out=[]; ["gene_tree","barley","oat","wheat","rice"].forEach(function(s){
      var q={}; q["homology."+s+".id"]={$gt:""};
-     if (db.genes.find(q).limit(1).size() > 0) out.push(s); }); print(out.join(" "))' 2>/dev/null | tr -d '\r')"
+     if (db.genes.find(q).limit(1).size() > 0) out.push(s); }); print(out.join(" "))' 2>/dev/null | tr -d '\r' | tail -1)"
 log "homology sets present in mongo: ${sets_in_mongo:-<none>}"
 # Compare COUNTS, not just presence. A >0 check passes on a core that is merely old: every set
 # was non-empty while solr still held 3,949,479 fewer memberships than mongo. These should match
 # exactly -- the mapper emits the field for every gene that has it -- so any gap is a real defect
 # (stale dump, stale core, or a mapper that stopped emitting).
 for set in ${sets_in_mongo}; do
+  # countDocuments, not count(): mongosh prints "DeprecationWarning: Collection.count() is
+  # deprecated..." to STDOUT ahead of the number, so the comparison below saw
+  # "DeprecationWarning: ...\n4449547" against solr's "4449547" and failed a core that was in
+  # fact correct, after an 8-hour stage. tail -1 as well, so any future notice cannot do this
+  # again. (The legacy `mongo` shell does not warn, which is why hand-checks never showed it.)
   mn="$("${MONGOSH}" --quiet "${MONGO_URI}/${MONGO_DB}" --eval \
-    "print(db.genes.count({'homology.${set}.id':{\$gt:''}}))" 2>/dev/null | tr -d '\r')"
+    "print(db.genes.countDocuments({'homology.${set}.id':{\$gt:''}}))" 2>/dev/null | tr -d '\r' | tail -1)"
   sn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${set}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
   if [ "${sn:-0}" = "${mn:-x}" ]; then
     ok "  tree set ${set}: ${sn} genes, matches mongo"
