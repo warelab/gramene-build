@@ -286,6 +286,31 @@ for set in ${sets_in_mongo}; do
  reused, or a load that did not take effect; check the 'reusing existing complete' line above."
   fi
 done
+
+# 3) Supertrees. Release 69 shipped a supertree id on 1,785,637 genes; v70 inherited the solr
+#    mapping with nothing writing the field and shipped two whole rebuilds with it empty, because
+#    nothing asserted it. decorate writes homology.<set>.supertree (search/supertrees.js) and
+#    mongo2solr.join emits supertree_attr_s / <set>_supertree_attr_s.
+#
+#    Presence plus a sanity bound, NOT an exact reconciliation against mongo: there is no index on
+#    homology.<set>.supertree, so counting it in mongo means a full scan of 16.1M docs (the
+#    equivalent $exists probe took over 100s per set). The invariant used instead needs no scan --
+#    a supertree implies a tree, so the count must be non-zero and must not exceed the tree count.
+for set in ${sets_in_mongo}; do
+  if [ "${set}" = "gene_tree" ]; then sfield="supertree_attr_s"; else sfield="${set}_supertree_attr_s"; fi
+  st="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${sfield}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
+  tn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${set}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
+  if [ "${st:-0}" -eq 0 ] 2>/dev/null; then
+    die "tree set '${set}': no gene carries ${sfield}.
+ Supertrees are not reaching solr. Check the 'supertrees[<set>]' lines in the 50_genes_decorate
+ log (search/supertrees.js) and that mongo2solr.join.js still emits the field."
+  elif [ "${st}" -gt "${tn:-0}" ] 2>/dev/null; then
+    die "tree set '${set}': ${st} genes carry ${sfield} but only ${tn} are in the tree set.
+ A supertree implies a tree, so this cannot be right."
+  else
+    ok "  supertrees ${set}: ${st} genes of ${tn} in the set"
+  fi
+done
 # report how many genes carry each merged capability
 for cap in MAKER VEP expression_attributes; do
   n="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=capabilities:${cap}&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
