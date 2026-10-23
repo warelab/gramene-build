@@ -29,21 +29,38 @@ cmp_taxa="$(mongo_eval "db.taxonomy.countDocuments({subset:'compara'})")"
 # which are already meaningful. An unnamed tree gets <prefix>root<root_id>, which does NOT survive
 # a compara release the way a family-based id does -- see genetree.js for that caveat.
 #
-# Expected counts are now ALL trees of the clusterset (tree_type='tree'), not just the named ones.
-#        tree_set | clusterset       | id prefix     | expected trees
-TREE_SETS=(
-  "gene_tree|default||170253"
-  "barley|barley_cultivars|EplBarleyGT_|87626"
-  "oat|oat_cultivars|EplOatGT_|60915"
-  "wheat|wheat_cultivars|EplWheatGT_|38737"
-  "rice|rice_cultivars|EplRiceGT_|28867"
+# The set -> clusterset -> prefix mapping is NOT repeated here. It comes from
+# gramene-mongodb/trees/tree_sets.js, which search/supertrees.js also requires, so the stage and
+# the supertree map cannot drift. (decorate.js and redecorate.js once carried private copies of a
+# species-rank map that silently disagreed; this table was heading the same way.)
+# NOT YET SHARED: genetree.js still builds its own copy of the id-rewrite SQL. It is equivalent
+# for every case that fires -- the substring offsets match clusterset.length+2 either way -- and it
+# has just been validated by a full run, so it is left alone rather than changed without a re-run.
+# tree_sets.js exports idSql() ready for it whenever stage 35 is next exercised.
+# Only the expected counts stay here -- those are facts about THIS release's compara, not about
+# the sets, and they are ALL trees of the clusterset (tree_type='tree'), not just the named ones.
+declare -A EXPECT_TREES=(
+  [gene_tree]=170253
+  [barley]=87626
+  [oat]=60915
+  [wheat]=38737
+  [rice]=28867
 )
+mapfile -t TREE_SETS < <("${NODE_BIN}" -e \
+  'require(process.argv[1]).TREE_SETS.forEach(function (t) { console.log([t.set, t.clusterset, t.prefix].join("|")); })' \
+  "${MONGODB_REPO}/trees/tree_sets.js")
+[ "${#TREE_SETS[@]}" -eq "${#EXPECT_TREES[@]}" ] \
+  || die "tree_sets.js yielded ${#TREE_SETS[@]} sets but ${#EXPECT_TREES[@]} expected counts are defined here —
+ add or remove a count in EXPECT_TREES above to match trees/tree_sets.js"
+ok "tree sets from trees/tree_sets.js: $(printf '%s ' "${TREE_SETS[@]%%|*}")"
 
 mongo_drop genetree
 cd "${MONGODB_REPO}/trees"
 
 for spec in "${TREE_SETS[@]}"; do
-  IFS='|' read -r ts cs pfx want <<< "${spec}"
+  IFS='|' read -r ts cs pfx <<< "${spec}"
+  want="${EXPECT_TREES[${ts}]:-}"
+  [ -n "${want}" ] || die "no expected tree count for set '${ts}' — add it to EXPECT_TREES above"
   before="$(mongo_count genetree)"
   log "tree set '${ts}': clusterset=${cs} prefix=${pfx:-<as published>} (expect ~${want})"
   TREE_SET="${ts}" CLUSTERSET="${cs}" TREE_ID_PREFIX="${pfx}" \
