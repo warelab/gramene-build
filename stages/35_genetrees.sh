@@ -101,12 +101,22 @@ $(grep '"err":"' "${ilog}" | head -3 | sed 's/^/   /')"
     die "tree set '${ts}': ${got} trees loaded, expected ~${want} — the set selection did not take (did TREE_SET/CLUSTERSET reach genetree.js?)"
   fi
   ok "tree set '${ts}': ${got} trees loaded"
+
+  # Trees are STORED FLAT now, and /genetrees rebuilds them with the same conversion. A rebuild
+  # that was subtly not an inverse would corrupt every tree response while every count here still
+  # looked right -- the same shape of failure as the 147 trees that went missing unnoticed. So
+  # check the stored documents actually are flat and do round trip exactly.
+  run "${NODE_BIN}" verify_tree_shape.js "${ts}" 50
+  [ $? -eq 0 ] || die "tree set '${ts}': stored trees failed the shape check (see above)"
 done
 
-# indexes: compara_db for backward compatibility, tree_set for the per-set LUT the adder builds
+# indexes: compara_db for backward compatibility, tree_set for the per-set LUT the adder builds,
+# and max_depth so "which trees would the old nested shape have refused?" stays answerable without
+# scanning 386k documents averaging ~100 KB each.
 mongo_eval "db.genetree.createIndex({compara_db:1})" >/dev/null
 mongo_eval "db.genetree.createIndex({tree_set:1})" >/dev/null
-ok "compara_db + tree_set indexes created"
+mongo_eval "db.genetree.createIndex({max_depth:1})" >/dev/null
+ok "compara_db + tree_set + max_depth indexes created"
 
 assert_mongo_min genetree 1000
 log "trees per set:"
@@ -114,4 +124,13 @@ mongo_eval "db.genetree.aggregate([{\$group:{_id:'\$tree_set',n:{\$sum:1}}},{\$s
 untagged="$(mongo_eval "db.genetree.countDocuments({tree_set:{\$exists:false}})")"
 [ "${untagged:-0}" -eq 0 ] && ok "every tree carries a tree_set" \
   || die "${untagged} trees have no tree_set — genetree.js did not tag them"
+
+# The point of the flat shape: trees the nested one could not store at all. Release 70 lost 147 of
+# them (barley 105, wheat 22, oat 16, default 4, rice 0) and ~120,014 genes' tree membership with
+# them. Reported per set and asserted only in total, because rice legitimately has none.
+log "trees too deep for the old nested shape:"
+cd "${MONGODB_REPO}/trees"
+run "${NODE_BIN}" verify_tree_shape.js --deep-report
+[ $? -eq 0 ] || die "no tree is deeper than the old nested limit — the deep trees are being dropped
+ again, or max_depth is not being written. Release 70 had 147 of them."
 stage_end
