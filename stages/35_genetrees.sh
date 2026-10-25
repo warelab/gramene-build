@@ -65,6 +65,28 @@ for spec in "${TREE_SETS[@]}"; do
   log "tree set '${ts}': clusterset=${cs} prefix=${pfx:-<as published>} (expect ~${want})"
   TREE_SET="${ts}" CLUSTERSET="${cs}" TREE_ID_PREFIX="${pfx}" \
     run "${NODE_BIN}" ${BIG_HEAP} genetree.js
+  # Check the exit status EXPLICITLY. These stages do not run under `set -e` and lib.sh's run()
+  # is `log "+ $*"; "$@"` -- it does not test the status either -- so a failing genetree.js was
+  # simply ignored. It is now non-zero when any insert fails, which is how 147 trees vanished
+  # from release 70 unnoticed.
+  rc=$?
+  [ "${rc}" -eq 0 ] || die "genetree.js exited ${rc} for tree set '${ts}' — some trees were not
+ stored. Its per-set log says which and why: ${MONGODB_REPO}/trees/inserts.genetree.${ts}.jsonl"
+  # Independent of the exit status, count failures in the log it just wrote, so a crash before the
+  # summary cannot hide them either.
+  ilog="${MONGODB_REPO}/trees/inserts.genetree.${ts}.jsonl"
+  if [ -s "${ilog}" ]; then
+    # `|| true`, not `|| echo 0`: grep -c already PRINTS 0 when nothing matches, it just exits 1,
+    # so `|| echo 0` emitted "0\n0" and the integer test below errored on every clean run.
+    ierr="$(grep -c '"err":"' "${ilog}" 2>/dev/null || true)"
+    [ "${ierr:-0}" -eq 0 ] \
+      && ok "tree set '${ts}': no insert errors" \
+      || die "tree set '${ts}': ${ierr} insert failures in ${ilog}
+ First few:
+$(grep '"err":"' "${ilog}" | head -3 | sed 's/^/   /')"
+  else
+    warn "tree set '${ts}': no insert log at ${ilog} — cannot confirm every tree stored"
+  fi
   after="$(mongo_count genetree)"
   got=$(( after - before ))
   # Bounded on BOTH sides. Too few means the clusterset name moved upstream, or a stable_id
