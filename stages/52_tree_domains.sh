@@ -40,13 +40,28 @@ dec="$(mongo --quiet "${MONGO_DB}" --eval '
     var leaves = 0, dom = 0, ntx = 0;
     db.genetree.aggregate([{$match: {tree_set: set}}, {$sample: {size: 20}}],
                           {allowDiskUse: true}).forEach(function (t) {
-      (function walk(n) {
-        if (!n.children || !n.children.length) {
+      // Trees are STORED FLAT (a nodes array, each node naming its parent). Walking n.children
+      // here counted the ROOT of each tree as its only leaf -- 20 trees gave "leaves=20", none
+      // decorated, and this gate failed a stage whose data was perfectly correct. A leaf is the
+      // gene-bearing node, which is exactly what add_domains_to_tree decorates, so test for
+      // gene_stable_id rather than for the absence of children.
+      if (t.nodes) {
+        t.nodes.forEach(function (n) {
+          if (!n.gene_stable_id) { return; }
           leaves++;
           if (n.domains) { dom++; }
           if (n.nTranscripts !== undefined) { ntx++; }
-        } else { n.children.forEach(walk); }
-      })(t);
+        });
+      }
+      else {
+        (function walk(n) {
+          if (!n.children || !n.children.length) {
+            leaves++;
+            if (n.domains) { dom++; }
+            if (n.nTranscripts !== undefined) { ntx++; }
+          } else { n.children.forEach(walk); }
+        })(t);
+      }
     });
     out.push(set + ":" + leaves + ":" + dom + ":" + ntx);
   });
