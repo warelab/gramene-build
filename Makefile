@@ -222,7 +222,7 @@ refresh-curated:
 	touch $(S)/52_tree_domains.done $(S)/58_expression_attributes.done
 	rm -f $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
 	REBUILD_CORE=1 $(MAKE) 60_solr_genes
-	REGEN_AUX=1 $(MAKE) 65_solr_suggestions
+	REGEN_AUX=1 REGEN_SUGGEST=1 $(MAKE) 65_solr_suggestions
 # refresh the solr-gene attribute tables (MAKER/VEP/grassius_homolog/expression)
 # without re-decorating — regenerates solr_genes.attribs.json + rebuilds the genes
 # core, THEN rebuilds the suggestion categories that are FACETED from those
