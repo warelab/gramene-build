@@ -19,10 +19,10 @@ broken was the data flow, in seven distinct ways, every one of them silent.
 | 5 | Curated GO and CHEBI terms had nowhere to land; evidence codes were the literal `"IDK"` | 2,126 `IDK` codes per 4,000 rice genes | yes |
 | 6 | DOI-keyed references became broken PubMed links | 250 rice genes | yes |
 | 7 | ThaleMine's absent-value sentinels were written into `gene.summary` and `gene.description` | 15,475 + 3,740 Arabidopsis genes | yes |
+| 8 | The client xref registry knew 24 of 107 xref dbs, hiding every curated symbol | 28,255 genes across 7 dbs | yes |
 
-Two further findings are recorded but **not** fixed: curation reaches only one assembly per species
-(§8), and the client's cross-reference registry knows 24 of the collection's 107 xref dbs, so every
-curation-bearing xref is invisible in the UI (§9).
+One further finding is recorded but **not** fixed: curation reaches only one assembly per species
+(§8). Defect 8, the client registry, was fixed after the first pass of this review — see §9.
 
 ---
 
@@ -294,17 +294,47 @@ It is **not** mechanical, which is why it was not done: an ortholog is not the s
 gene, and projecting a curator's statement onto another assembly asserts something the curator did
 not. That is a scientific decision, not a build decision.
 
-## 9. Recorded, not fixed: the client xref registry is the narrowest point in the chain
+## 9. The client xref registry was the narrowest point in the chain
 
-`Xrefs.js:92` filters on `dbxrefs.isKnown(xr.db)`, a plain `hasOwnProperty` against a static 24-entry
-table in the `gramene-dbxrefs` package. The collection holds **107 distinct `xrefs.db` values**, so 83
-never render — and the missing ones include **every curation-bearing xref**: `TAIR_SYMBOL` (9,793
-genes), `Oryzabase` (8,051), `RAP-DB` (1,175), `Grassius` (8,796), `external_wheat_gene_names` (257).
-They are in the API and invisible in the UI.
+`Xrefs.js:92` filters on `dbxrefs.isKnown(xr.db)`, a plain `hasOwnProperty` against a static table in
+the `gramene-dbxrefs` package. That table held **24 entries** against the collection's **107 distinct
+`xrefs.db` values**, so 83 were dropped without a trace — including **every xref carrying a curated
+gene symbol or name**.
 
-The new `MaizeGDB` and `DOI` xrefs are in the same position. `gramene-dbxrefs` is a separate
-repository, present on squam only as an installed dependency, so extending it is a client-side change
-outside this build.
+**Fixed** in `gramene-dbxrefs` (branch `curated-xrefs`, v3.0.16), which adds the seven that matter
+here: `TAIR_SYMBOL` (9,793 genes), `Grassius` (8,796), `Oryzabase` (8,051), `RAP-DB` (1,175),
+`external_wheat_gene_names` (257), plus `MaizeGDB` (9,983) and `DOI` (~250), both new in r70.
+
+Two things worth recording about that change.
+
+**It had to be based on `dev`, not `master`.** `master` is abandoned at **v3.0.1 with 15 entries**
+while the client runs **v3.0.15 with 24** — `origin/dev` is byte-identical to the installed copy.
+Editing master would have *deleted* nine entries from the client, `PUBMED` among them, which would
+have taken the Curated publications tab with it.
+
+**`Grassius` and `external_wheat_gene_names` link to a within-site facet filter**, not outbound,
+following the shape `PanOryza` / `SB_PanGene` / `Pan-Zea` already use. A Grassius id is a
+transcription-factor *family* — a set of genes — not an external record, and grassius.org currently
+answers 500 and has no gene- or family-page route anywhere in this codebase. Those two encode their
+query values where the existing three pass raw ones, because 9 of the 90 Grassius families contain
+`/` and 2 contain spaces, parens and a comma (`SHI/STY (SRS)`, `p15 (PC4,Sub1)`). That is safe
+because redux-bundler's query parser decodes both key and value, which was checked against the
+parser itself rather than assumed.
+
+**Still unregistered: 76 dbs**, the largest being `EntrezGene` (2.7M genes), `WikiGene` (2.7M),
+`RefSeq_peptide_predicted` (2.5M), `STRING` (2.2M), `ArrayExpress` (1.7M) and `Uniprot_gn` (804k),
+plus `Reactome`, `BioGRID`, `PGSC_GENE`, `LeGOO` and `Phytozome`. None carries curated gene names, so
+none was in scope here; what the Cross-references tab should show beyond curation is a product
+decision.
+
+### An adjacent defect in `gramene-search`, not fixed
+
+`Location.js:164-172` builds a second, parallel set of external links — TAIR, ThaleMine, RAP-DB,
+MaizeGDB — keyed on `gene._id` and `gene.taxon_id` and rendered in the Location tab's `<Links>`.
+Its RAP-DB link is broken twice over: it is gated on `gene.taxon_id === 39947`, but this build's
+taxon ids are synthetic (rice japonica is **39947001**), so the condition never fires; and the URL
+points at `rapdb.dna.affrc.go.jp`, which does not answer. Both are one-line fixes in a repo outside
+this build.
 
 ## Other items recorded for the next release
 
