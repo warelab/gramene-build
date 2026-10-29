@@ -38,13 +38,32 @@ const TARGETS = SPECIES.length ? SPECIES
 // NB: require() resolves relative to THIS file, not to cwd, so the adders are loaded by absolute
 // path even though process.chdir(SEARCH) above is what makes them find their own input files.
 const A = n => path.join(SEARCH, n);
+
+// This must be decorate.js's ENTIRE isGramene block, in its exact order -- not just the curated
+// adders. Running only the curated ones and comparing against the live collection is an
+// apples-to-oranges comparison that invents regressions: fix_sorghum_v2 writes 15,504 sorghum
+// descriptions from the v2 deflines and grassius supplies 2,799 sorghum synonyms, so omitting them
+// made a correct run look like it had destroyed both fields. A gate that reports phantom losses is
+// worse than no gate, because someone will believe it.
 const CHAIN = [
-  ['maizegdb',  () => require(A('maizegdb'))()],
-  ['thalemine', () => require(A('thalemine'))()],
-  ['rapdb',     () => require(A('rapdb'))()],
-  ['curated',   () => require(A('curated'))()],
-  ['generifs',  () => require(A('generifs'))(Number(process.env.REDIS_GENERIF_DB || 3))],
+  ['fixMaizeV4',        () => require(A('fix_maize_v5'))()],
+  ['maizegdb',          () => require(A('maizegdb'))()],
+  ['fixSorghumV2',      () => require(A('fix_sorghum_v2'))()],
+  ['panZeaAdder',       () => require(A('panmaize_xrefs'))()],
+  ['grassius',          () => require(A('grassius'))()],
+  ['vitisSynonymAdder', () => require(A('vitis_synonym_adder'))()],
+  ['msu6Adder',         () => require(A('msu6_adder'))()],
+  ['fixBarley',         () => require(A('fix_barley_ids'))()],
+  ['thalemine',         () => require(A('thalemine'))()],
+  ['rapdb',             () => require(A('rapdb'))()],
+  ['curated',           () => require(A('curated'))()],
+  ['generifs',          () => require(A('generifs'))(Number(process.env.REDIS_GENERIF_DB || 3))],
+  ['qtls',              () => require(A('addQtlXrefs'))()],
 ];
+
+function usable(v) {
+  return !!v && v !== 'NULL' && v !== '""' && v !== '\\N' && String(v).trim() !== '';
+}
 
 const ANNOTATION_DBS = ['domains', 'GO', 'PO', 'TO', 'taxonomy', 'familyRoot', 'QTL_TO'];
 
@@ -82,8 +101,12 @@ function summarise(docs) {
   docs.forEach(d => {
     if (d.name && d.name !== d._id) s.named++;
     if (d.synonyms && d.synonyms.length) s.withSyn++;
-    if (d.description) s.withDesc++;
-    if (d.summary && d.summary !== 'NULL') s.withSummary++;
+    // Count USABLE values, not merely truthy ones. ThaleMine's absent-value sentinels are the
+    // strings "NULL" and the two-character '""', both truthy: 15,475 live arabidopsis docs carry
+    // the former as `summary` and 3,740 the latter as `description`. Counting them as present makes
+    // removing them look like a loss, when it is the defect being removed.
+    if (usable(d.description)) s.withDesc++;
+    if (usable(d.summary)) s.withSummary++;
     const perDb = {};
     (d.xrefs || []).forEach(x => {
       perDb[x.db] = (perDb[x.db] || 0) + 1;
@@ -126,8 +149,14 @@ function summarise(docs) {
 
     const after = summarise(await pipeThrough(docs, CHAIN));
 
-    // The "before" is the live collection, which is what users see today.
-    const live = await genes.find({system_name: sp},
+    // The "before" is the live collection, which is what users see today. Query by taxon_id: it is
+    // indexed (taxon_id_1_db_type_1_gene_idx_1) where system_name is not, which turns a 16.1M-doc
+    // collection scan per species into an index lookup.
+    const taxa = (await client.db(MONGO_DB).collection('maps')
+      .find({type: 'genome', system_name: sp}, {projection: {taxon_id: 1}}).toArray())
+      .map(m => m.taxon_id);
+    if (!taxa.length) { console.log('## ' + sp + ': no genome in maps\n'); continue; }
+    const live = await genes.find({taxon_id: {$in: taxa}},
       {projection: {_id: 1, name: 1, synonyms: 1, description: 1, summary: 1, xrefs: 1}}).toArray();
     const before = summarise(live);
 
@@ -141,8 +170,8 @@ function summarise(docs) {
     };
     row('genes with a name != id', before.named, after.named);
     row('genes with synonyms', before.withSyn, after.withSyn);
-    row('genes with a description', before.withDesc, after.withDesc);
-    row('genes with a real summary', before.withSummary, after.withSummary);
+    row('genes with a usable description', before.withDesc, after.withDesc);
+    row('genes with a usable summary', before.withSummary, after.withSummary);
     const srcs = Array.from(new Set(Object.keys(before.pubBySource).concat(Object.keys(after.pubBySource))));
     srcs.sort().forEach(k => row('  literature ' + k, before.pubBySource[k] || 0, after.pubBySource[k] || 0));
     ['MaizeGDB', 'GO', 'PO', 'TO'].forEach(db =>
@@ -156,4 +185,8 @@ function summarise(docs) {
   }
 
   await client.close();
+  // generifs.js opens a redis client and never quits it, so the event loop stays alive and this
+  // process would hang after printing everything -- which is exactly why decorate.js ends with an
+  // explicit process.exit(0) rather than letting the streams drain naturally.
+  process.exit(0);
 })().catch(e => { console.error('ERR ' + (e && e.stack || e)); process.exit(1); });

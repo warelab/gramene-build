@@ -18,7 +18,7 @@ broken was the data flow, in seven distinct ways, every one of them silent.
 | 4 | The RAP-DB URL in the code is a dead host, masked by a stale mirror | 1,041 missing entries | yes |
 | 5 | Curated GO and CHEBI terms had nowhere to land; evidence codes were the literal `"IDK"` | 2,126 `IDK` codes per 4,000 rice genes | yes |
 | 6 | DOI-keyed references became broken PubMed links | 250 rice genes | yes |
-| 7 | ThaleMine's `"NULL"` sentinel was written into `gene.summary` | 15,511 Arabidopsis genes | yes |
+| 7 | ThaleMine's absent-value sentinels were written into `gene.summary` and `gene.description` | 15,475 + 3,740 Arabidopsis genes | yes |
 
 Two further findings are recorded but **not** fixed: curation reaches only one assembly per species
 (§8), and the client's cross-reference registry knows 24 of the collection's 107 xref dbs, so every
@@ -204,16 +204,76 @@ second defect: `mongo2solr.join.js` assigned rather than appended `<db>__xrefs`,
 DOI references would lose one. PUBMED had been special-cased for exactly that reason; the generic
 branch now accumulates.
 
-## 7. ThaleMine's `"NULL"` sentinel was written into `gene.summary`
+## 7. ThaleMine's absent-value sentinels were written into the gene doc
 
-ThaleMine returns the four-character string `NULL` for an absent value, on **19,850 of its 38,194
-rows**. `thalemine.js:43` screened `'""'` but not `'NULL'`, so **15,511 Arabidopsis docs** carry it,
-and it reaches the index and the API. The client happens to screen it (`GeneList.js:32`,
-`summary !== "NULL"`), so nothing displayed wrong — but it inflated every summary count and any new
-consumer of the field would have had to know the sentinel.
+ThaleMine uses **two** sentinels for an absent value, and `thalemine.js:43-45` screened one of them
+for one field:
 
-**Fixed.** Expect `summary` to fall from **28,279 docs to ≈13,269**, all real. That decrease is the
-defect being removed, not a regression.
+| field | sentinel | screened before? | live arabidopsis docs carrying it |
+| --- | --- | --- | --- |
+| `summary` | the four-character `NULL` | no — the guard tested `!= '""'` | **15,475** |
+| `description` | the two-character `""` | no — only tested truthiness, and `""` is truthy | **3,740** |
+
+19,850 of ThaleMine's 38,194 rows have a sentinel curator summary and 4,279 a sentinel brief
+description. Both strings reach the index and the API. The client screens `summary !== "NULL"`
+(`GeneList.js:32`) so nothing displayed wrong there, but nothing screened `description`.
+
+**Fixed** with one `usable()` predicate covering both sentinels, applied to summary, description and
+symbol alike. The measured effect, and the two numbers are different in character:
+
+* `summary`: **28,279 docs → ≈13,269**, all real. A *decrease*, and it is the defect being removed —
+  15,475 of the originals were the string `NULL`. The count of genuinely curated summaries does not
+  move: 12,804 before, 12,804 after.
+* `description`: **real descriptions 29,093 → 32,143, a gain of 3,050**, with 3,740 `""` placeholders
+  removed. Not screening the sentinel had caused it to *overwrite* a gene's real Ensembl description;
+  screening it lets 3,050 genes fall back to the real one, and leaves only 690 with no description at
+  all because there was none to fall back to.
+
+The raw field count for `description` falls from 32,833 to 32,143, which looks like a loss of 690 and
+is in fact a gain of 3,050 real values. Worth stating explicitly, because a gate counting merely
+truthy values reports the opposite of the truth here — `curated_dryrun.js` counts usable values for
+exactly this reason.
+
+---
+
+## What the fixes measure out to
+
+From `build/curated_dryrun.js`, which runs decorate's full species-adder block over the stage-40
+dumps and compares against the live collection. Nothing was written to produce these.
+
+| | sorghum | maize | rice | arabidopsis |
+| --- | --- | --- | --- | --- |
+| genes in the genome | 35,567 | 44,303 | 38,993 | 32,833 |
+| genes with a real name | 1,933 → **2,517** | 15,747 → **17,333** | 14,323 → **14,620** | 11,148 → 11,149 |
+| genes with synonyms | 2,821 → 2,826 | 4,225 → **10,071** | 6,789 → **7,325** | 21,859 → = |
+| curated literature records | 171 → **1,148** (CSHL) | 647 → = (geneRIF only) | 7,663 → **8,517** (rap-db) | 3 → 5 (CSHL) |
+| references rerouted to `DOI` | — | — | 0 → **244** | — |
+| `MaizeGDB` xref | — | 0 → **9,983** | — | — |
+| curated `PO` / `TO` | 0 → 4 / 0 → 2 | — | 2,341 → **2,733** / 3,855 → **4,401** | 19,805 → = / — |
+| `IDK` evidence codes | 0 | 0 | **27,422 → 0** | 0 |
+| genes with a duplicated annotation-bearing xref db | **0** | **0** | **0** | **0** |
+
+Four things in that table are load-bearing as *non*-changes, and each is a gate:
+
+* **`geneRIF` records do not move anywhere** (sorghum 15, maize 647, rice 886, arabidopsis 24,771).
+  Nothing in this work touches redis db 3, so any change there would be an accidental regression.
+* **`GO` xref counts do not move** — sorghum 24,176 (+1 from the curation sheet), maize 27,548, rice
+  22,669, arabidopsis 28,174. This is the proof that the merge fix of §5 works: the adders now add
+  curated terms into the gene's existing GO xref instead of pushing a second one, so no Ensembl term
+  is displaced. Maize staying at exactly 27,548 also confirms MaizeGDB's unattributed `obo_terms` GO
+  was deliberately not imported.
+* **No gene anywhere ends up with two xrefs for one annotation-bearing db**, which is the `keyBy`
+  trap asserted directly rather than reasoned about.
+* **Arabidopsis's curated summary count does not move**: 12,804 before, 12,804 after. Only the 15,475
+  `NULL` sentinels disappear.
+
+Arabidopsis descriptions deserve their own line because the raw count is misleading: the field count
+falls 32,833 → 32,143, while **real** descriptions rise 29,093 → **32,143**, a gain of 3,050, because
+3,740 `""` placeholders stop overwriting genuine Ensembl descriptions. See §7.
+
+Projected effect on the served index once `make refresh-curated` runs: `capabilities:pubs` rises from
+19,911 toward roughly 21,000, with sorghum going 168 → ~900 and rice ~5,714 → ~6,300. Maize stays at
+423, because MaizeGDB supplies names rather than literature.
 
 ---
 
@@ -257,9 +317,9 @@ outside this build.
   Teaching it would cascade `30 → 35 → 50 → …`, so it is deferred.
 * **`fix_maize_v5.js:120-122`** blanks `description` for every `taxon_id == 4577` gene it does not
   know. The MaizeGDB adder masks this for ~10,000 genes; the unconditional blanking is still wrong.
-* **The data-hygiene list**: `description` can be the two-character string `""`; rice `synonyms` carry
-  quote-split artifacts (`"sd1 (d47`, `sd1-1)"`); `PUBMED.ids` are strings from `rap-db` and integers
-  from `geneRIF`; `maps.is_anchor` is `false` on all 267 genomes.
+* **The data-hygiene list**: rice `synonyms` carry quote-split artifacts (`"sd1 (d47`, `sd1-1)"`);
+  `PUBMED.ids` are strings from `rap-db` and integers from `geneRIF`; Arabidopsis `PO` xref pairs
+  carry an empty evidence code on 473,528 terms; `maps.is_anchor` is `false` on all 267 genomes.
 
 ---
 
