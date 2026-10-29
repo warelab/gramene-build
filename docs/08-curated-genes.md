@@ -20,6 +20,7 @@ broken was the data flow, in seven distinct ways, every one of them silent.
 | 6 | DOI-keyed references became broken PubMed links | 250 rice genes | yes |
 | 7 | ThaleMine's absent-value sentinels were written into `gene.summary` and `gene.description` | 15,475 + 3,740 Arabidopsis genes | yes |
 | 8 | The client xref registry knew 24 of 107 xref dbs, hiding every curated symbol | 28,255 genes across 7 dbs | yes |
+| 9 | Three Location-tab gene links gated on a bare NCBI taxid, which a synthetic `taxon_id` never equals | TAIR, ThaleMine, RAP-DB — never rendered | yes |
 
 One further finding is recorded but **not** fixed: curation reaches only one assembly per species
 (§8). Defect 8, the client registry, was fixed after the first pass of this review — see §9.
@@ -327,14 +328,39 @@ plus `Reactome`, `BioGRID`, `PGSC_GENE`, `LeGOO` and `Phytozome`. None carries c
 none was in scope here; what the Cross-references tab should show beyond curation is a product
 decision.
 
-### An adjacent defect in `gramene-search`, not fixed
+### 10. Three gene-page links in `gramene-search` had never once rendered
 
-`Location.js:164-172` builds a second, parallel set of external links — TAIR, ThaleMine, RAP-DB,
-MaizeGDB — keyed on `gene._id` and `gene.taxon_id` and rendered in the Location tab's `<Links>`.
-Its RAP-DB link is broken twice over: it is gated on `gene.taxon_id === 39947`, but this build's
-taxon ids are synthetic (rice japonica is **39947001**), so the condition never fires; and the URL
-points at `rapdb.dna.affrc.go.jp`, which does not answer. Both are one-line fixes in a repo outside
-this build.
+`Location.js` `links()` builds a second, parallel set of external links in the Location tab, and
+gated three of its four on `gene.taxon_id === <bare NCBI taxid>`. This build's `taxon_id` is
+synthetic — NCBI taxid × 1000 + n — so A. thaliana is **3702001** and rice japonica **39947001**,
+and `=== 3702` / `=== 39947` can never be true. **The TAIR, ThaleMine and RAP-DB links have never
+appeared on a gene page.** The Phytozome link beside them has always worked, and shows why:
+`annotations.taxonomy.ancestors` holds *real* NCBI ids.
+
+**Fixed** in `gramene-search` (branch `fix-location-links`, v2.41.3): both lineage gates now go
+through one guarded `descendsFrom()` helper — the old Phytozome line would throw on a gene with no
+taxonomy annotation and take the whole tab with it.
+
+RAP-DB deliberately does **not** get a lineage gate. Its `/locus/` route takes a RAP locus id, and
+of the 17 *O. sativa* genomes hosted, azucena and ARC 10497 also descend from 39947 — they are
+Japonica-group cultivars — but their ids are `OsAzu_01g0000010` and `OsARC_01g0000010`, so a lineage
+gate would hand RAP-DB identifiers it cannot resolve. Gating on the id shape `/^Os\d{2}g\d{7}$/`
+selects the IRGSP-1.0 reference alone. 3702 needs no such care: halleri (63677) and lyrata (81972)
+are both hosted and neither has 3702 in its lineage.
+
+Its RAP-DB URL also moved off `rapdb.dna.affrc.go.jp`, which does not respond at all, and its TAIR
+URL off the legacy `/servlets/TairObject` endpoint onto the `/results` search `gramene-dbxrefs`
+already uses, so the two stop disagreeing about the same site.
+
+Behaviour after the fix, asserted against live documents for nine genomes:
+
+| genome | before | after |
+| --- | --- | --- |
+| arabidopsis_thaliana | Ensembl Browser | **Ensembl Browser, tair, ThaleMine** |
+| oryza_sativa | Ensembl Browser | **Ensembl Browser, RAP-DB** |
+| arabidopsis lyrata / halleri, oryza indica / azucena / ARC | Ensembl Browser | Ensembl Browser (unchanged) |
+| zea_mays | Ensembl Browser, MaizeGDB | unchanged |
+| sorghum_bicolor | Ensembl Browser, Phytozome | unchanged |
 
 ## Other items recorded for the next release
 
