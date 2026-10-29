@@ -30,7 +30,7 @@ ST    := stages
 
 .PHONY: all mongo solr index status running clean-stamps add-studies \
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
-        refresh-grassius refresh-attributes \
+        refresh-grassius refresh-attributes 29_curated_sources refresh-curated \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
@@ -38,6 +38,9 @@ ST    := stages
 
 28_grassius_source:
 	bash $(ST)/28_grassius_source.sh
+
+29_curated_sources:
+	bash $(ST)/29_curated_sources.sh
 
 # ── on-demand ATOMIC refresh of ONE post-dump attribute layer ────────────────
 # Patches that layer into the genes core IN PLACE via Solr atomic updates (no drop /
@@ -156,7 +159,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 70_services: $(S)/70_services.done
 
 status:
-	@for s in 00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
+	@for s in 00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 29_curated_sources 30_curated \
 	          35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
 	          56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services; do \
 	  if [ -f $(S)/$$s.done ]; then echo "  [x] $$s ($$(cat $(S)/$$s.done))"; else echo "  [ ] $$s"; fi; \
@@ -164,7 +167,7 @@ status:
 
 # `make running` — liveness (status only shows COMPLETED stamps, not what's active)
 running:
-	@procs=$$(pgrep -af 'make (all|[0-9])|stages/[0-9]|decorate\.js|mongo2solr|solr_chunk_load|add_attributes\.pl|suggestions/(aux|genes)\.js|dump_genes|dump_homologs|genetree\.js|parseData|project_expression|expression_attributes_table|grassius_homolog_table|attr_table_to_atomic|solr_atomic_attr|62_attr_atomic' | grep -v 'grep\|pgrep' || true); \
+	@procs=$$(pgrep -af 'make (all|[0-9])|stages/[0-9]|decorate\.js|mongo2solr|solr_chunk_load|add_attributes\.pl|suggestions/(aux|genes)\.js|dump_genes|dump_homologs|genetree\.js|parseData|project_expression|expression_attributes_table|grassius_homolog_table|attr_table_to_atomic|solr_atomic_attr|62_attr_atomic|fetch_cshl_curation|fetch_grassius' | grep -v 'grep\|pgrep' || true); \
 	if [ -n "$$procs" ]; then echo "RUNNING:"; echo "$$procs" | sed 's/^/  /'; \
 	else echo "idle — no build stage is running"; fi; \
 	echo "--- most recent log activity ---"; ls -lt logs/*.log 2>/dev/null | head -3 | awk '{print "  "$$6" "$$7" "$$8"  "$$NF}'
@@ -200,6 +203,26 @@ refresh-grassius:
 	rm -f $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
 	$(MAKE) all
+
+# refresh the curated-gene sources (the in-house curation sheet + MaizeGDB names) and push them
+# through to the served index. 50 -> 60 -> 65 only, deliberately skipping 52 and 58.
+#
+# Why skipping is correct: 52_tree_domains reads gene DOMAINS and homology.<set>.id and writes the
+# genetree collection; 58_expression_attributes builds expression_attributes from the expression /
+# assays / experiments collections and reads genes only for ids and taxa. Neither reads name,
+# synonyms, summary, description or xrefs, and neither writes into genes -- so re-running them after
+# a curation-only change is ~7h34m of provable no-op. Both still DEPEND on 50's stamp, so make would
+# rebuild them; `touch` advances their mtime while preserving the real run time their content
+# records. This is the same deliberate stamp override that build/logs/chain.pathways.log documents,
+# and it must be logged the same way when run.
+refresh-curated:
+	bash stages/29_curated_sources.sh
+	rm -f $(S)/50_genes_decorate.done
+	$(MAKE) 50_genes_decorate
+	touch $(S)/52_tree_domains.done $(S)/58_expression_attributes.done
+	rm -f $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	REBUILD_CORE=1 $(MAKE) 60_solr_genes
+	REGEN_AUX=1 $(MAKE) 65_solr_suggestions
 # refresh the solr-gene attribute tables (MAKER/VEP/grassius_homolog/expression)
 # without re-decorating — regenerates solr_genes.attribs.json + rebuilds the genes
 # core, THEN rebuilds the suggestion categories that are FACETED from those
