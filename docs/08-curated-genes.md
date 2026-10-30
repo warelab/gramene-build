@@ -25,6 +25,11 @@ broken was the data flow, in seven distinct ways, every one of them silent.
 One further finding is recorded but **not** fixed: curation reaches only one assembly per species
 (§8). Defect 8, the client registry, was fixed after the first pass of this review — see §9.
 
+All seven server-side fixes are **in the served index** as of **2026-10-30 08:17**, by way of
+`make refresh-curated` (stages 29 → 50 → 60 → 65). The realized counts, and how they compare with
+what the dry run predicted, are in [What the rebuild actually produced](#what-the-rebuild-actually-produced).
+Defects 8 and 9 are client-side and wait on the `gramene-dbxrefs` and `gramene-search` branches.
+
 ---
 
 ## What reached users before this review
@@ -272,9 +277,55 @@ Arabidopsis descriptions deserve their own line because the raw count is mislead
 falls 32,833 → 32,143, while **real** descriptions rise 29,093 → **32,143**, a gain of 3,050, because
 3,740 `""` placeholders stop overwriting genuine Ensembl descriptions. See §7.
 
-Projected effect on the served index once `make refresh-curated` runs: `capabilities:pubs` rises from
-19,911 toward roughly 21,000, with sorghum going 168 → ~900 and rice ~5,714 → ~6,300. Maize stays at
-423, because MaizeGDB supplies names rather than literature.
+### What the rebuild actually produced
+
+`make refresh-curated` ran on 2026-10-29/30: stage 29 at 17:16, stage 50 (re-decorate) 17:16 → 22:22,
+stage 60 (Solr genes) 22:22 → 07:41, stage 65 (suggestions) to 08:17. **Every figure in the dry-run
+table above was reproduced exactly** — not approximately, exactly, on all four genomes and on all
+four non-change gates. That is the strongest evidence that `curated_dryrun.js` is a faithful stand-in
+for the pipeline, and it is the reason to run it before ever spending the 15 hours again.
+
+Mongo, `search70.genes` (16,127,051 docs, no insertion errors):
+
+| | before | after |
+| --- | --- | --- |
+| `PUBMED` records tagged `CSHL` | 174 | **1,153** |
+| sorghum genes carrying one | 155 | **1,052** |
+| `MaizeGDB` xref, genes | 0 | **9,983** |
+| `DOI` records tagged `rap-db` | 0 | **244** |
+| `IDK` evidence codes, rice | 27,422 | **0** |
+| `PUBMED` records tagged `geneRIF`, all 63 genomes | 28,934 | **28,934** |
+| genes with a duplicated annotation-bearing xref db | 0 | **0** |
+
+Solr, the `genes70` core, by `capabilities` facet:
+
+| capability | before | after | |
+| --- | --- | --- | --- |
+| `pubs` | 19,911 | **21,578** | sorghum 168 → **1,065**, rice 5,714 → **6,482**, arabidopsis 7,334 → 7,336 |
+| `PO` | 22,146 | **22,542** | + rice 392, sorghum 4 |
+| `TO` | 3,855 | **4,403** | + rice 546, sorghum 2 |
+| `GO` | 9,512,687 | **9,512,688** | + the one sorghum gene that had no GO xref before |
+| `QTL_TO` | 72,933 | **72,933** | |
+| everything else | | **identical** | |
+
+Maize held at 423 as predicted, because MaizeGDB supplies names rather than literature; medicago held
+at its 4,271 source-less Ensembl-core records, which are not ours to fix. `MaizeGDB__xrefs` exists as
+a queryable field for the first time, on 9,983 docs.
+
+The suggestion core carries the new symbols: `suggestions70` has 36,066,413 docs, its primary-id
+suggestions match the genes core at 16,127,051, and the MaizeGDB symbols are autocompletable
+(`name:thk1` and `name:mha11` each resolve to one maize gene). `terms.tsv` grew 47,814,188 →
+47,830,237 rows.
+
+One defect of our own surfaced during the run and is fixed in `58642f7`:
+`stages/65_solr_suggestions.sh` resolved the term file as
+`${SOLR_TERMS_TSV:-${SOLR_DUMP_DIR:-${GENES}}/terms.tsv}`, but `GENES` is a local variable each stage
+sets for itself (`60_solr_genes.sh:17`, `62_attr_atomic.sh:58`) and is not exported from `config.sh`.
+Under `set -u` the last fallback aborted the stage with `GENES: unbound variable`. It had only ever
+worked by inheritance — the earlier successful runs had stages 60 and 65 invoked from one shell with
+`SOLR_DUMP_DIR` exported, so the first fallback hit and `${GENES}` was never evaluated. Invoking 65 as
+its own make target gives it neither variable, which is what both `refresh-curated` and the
+pre-existing `refresh-attributes` do, so the bug was waiting for whichever of them ran first.
 
 ---
 
