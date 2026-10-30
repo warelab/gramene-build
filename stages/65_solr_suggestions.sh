@@ -17,6 +17,12 @@ gdocs="$(solr_numdocs "${SOLR_GENES_CORE}")"
 SUGG="${SOLR_REPO}/suggestions"
 cd "${SUGG}"
 GENES_URL="${SOLR_URL}/${SOLR_GENES_CORE}"
+# Same local definition 60_solr_genes.sh:17 and 62_attr_atomic.sh:58 make. It is NOT exported from
+# config.sh, and the terms.tsv fallback below ends in ${GENES}, so without this the stage dies with
+# "GENES: unbound variable" the moment it is invoked as its own make target -- which is exactly what
+# `make refresh-curated` and `make refresh-attributes` do. It only ever worked when 60 and 65 ran
+# from one shell that had SOLR_DUMP_DIR or SOLR_TERMS_TSV exported in it.
+GENES="${SOLR_REPO}/genes"
 
 # fresh core — prefer the REPO conf (authoritative, minimized Solr 8.2 managed-schema);
 # fall back to the previous release's deployed core conf.
