@@ -1,6 +1,6 @@
 # Upstream data defects found building release 70
 
-Reported **2026-10-13**. Source: Ensembl Plants release 70 cores and
+Reported **2026-10-13**; defect 7 added **2026-10-30**. Source: Ensembl Plants release 70 cores and
 `ensembl_compara_plants_70_116`. Every figure below was taken from the release databases, and the
 queries in [Reproducing these](#reproducing-these) return the numbers quoted.
 
@@ -14,8 +14,11 @@ Shareable version: <https://claude.ai/artifact/ECp1Ds2PbmJaYsPrdQdU4q>
 | 4 | `GCA_030347555.1` labelled cv. Natoba; INSDC says Highworth | lablab | 1 genome | Ensembl Plants |
 | 5 | 198 duplicate gene models sharing coordinates and exon structure | lablab | 396 loci | ILRI / LegumeInfo |
 | 6 | Maize v5 genes get empty pathways: reactions file carries only v4 | maize | 1,587 genes | Plant Reactome |
+| 7 | `gene.description` empty in the e116 cores where e114 had it | 225 of 267 | **2,323,799 genes** | Ensembl Plants |
 
-Defects 1 and 2 are visible in the **published release 69** data as well.
+Defects 1 and 2 are visible in the **published release 69** data as well. Defect 7 is new in this
+release and is, by scale, the largest of the seven: it removes a gene description from roughly one
+plant gene in seven across the whole site.
 
 ---
 
@@ -124,6 +127,67 @@ were the same thing.
 
 ---
 
+## 7. `gene.description` is empty in the e116 cores
+
+The `gene.description` column is populated in the release-69 (e114) cores and empty in the
+release-70 (e116) cores, for almost every species. Across all 267 `*_core_70_116_*` cores only
+**114,089 of 16,127,051** genes carry a description — 0.71%. Of the 225 species that have a core in
+both releases:
+
+| | e114 | e116 |
+| --- | --- | --- |
+| genes with a non-empty `description` | 2,374,970 | **51,171** |
+| net loss | | **2,323,799 genes** |
+| cores losing >90 percentage points of coverage | | 53 |
+| cores losing 50–90 points | | 8 |
+| cores losing 10–50 points | | 23 |
+| cores within 10 points of e114 | | 141 |
+
+Exactly **one** e116 core is above 50% description coverage — `arabidopsis_thaliana`, at 96.8%
+(31,770 / 32,833). The next highest is `medicago_truncatula` at 8.9%, and that is only because we
+loaded those descriptions ourselves from LeGOO. The 42 cores new in release 70 carry descriptions on
+62,918 of 4,551,499 genes (1.4%), so this is not confined to carried-over species.
+
+**This is not a re-annotation side effect.** The gene sets are byte-for-byte the same size:
+
+| species | genes e114 | genes e116 | described e114 | described e116 |
+| --- | --- | --- | --- | --- |
+| brassica_napus | 104,573 | 104,573 | 66,227 | **104** |
+| triticum_turgidum | 66,559 | 66,559 | 62,801 | **0** |
+| eragrostis_curvula | 56,849 | 56,849 | 56,809 | **0** |
+| glycine_max | 57,147 | 57,147 | 57,012 | 1,528 |
+| rosa_chinensis | 50,517 | 50,517 | 47,018 | 52 |
+| zea_mays | 44,303 | 44,303 | 39,980 | 234 |
+| sorghum_bicolor | 35,567 | 35,567 | 35,264 | 216 |
+| arabidopsis_thaliana | 32,833 | 32,833 | 31,771 | 31,770 |
+
+Same number of current genes in every pair, with the description column emptied. Whatever populates
+that column during the core build did not run, or ran against nothing, for all but one species.
+
+The loss reaches users unchanged, because the pipeline is faithful to the core. `dump_genes.js:164`
+selects `g.description` directly, and the stage-40 dumps agree with the cores exactly:
+
+| | core | our dump |
+| --- | --- | --- |
+| brassica_napus | 104 | 104 |
+| glycine_max | 1,528 | 1,528 |
+| rosa_chinensis | 52 | 52 |
+| glycine_soja | 114 | 114 |
+
+A `brassica_napus` gene that read `"BnaCnng61390D protein [Source:UniProtKB/TrEMBL;Acc:A0A078JNA5]"`
+in release 69 now has `description: null`.
+
+What partly masks it is our own annotation layer: the release serves 139,793 gene descriptions
+against the cores' 114,089, and the extra **25,704** come from file-based adders — `fix_sorghum_v2`
+deflines (15,504), MaizeGDB and `fix_maize_v5` (9,827) and ThaleMine (373). That backfill exists for
+four genomes only. For the other 263 there is nothing to fall back on, which is why 53 cores lost
+more than 90 points of coverage.
+
+We have not modified the cores for this defect, and we cannot: there is no local source for 2.3
+million UniProt-derived deflines. It needs the description column repopulated at the source.
+
+---
+
 ## Items for other maintainers
 
 ### 5. 198 duplicate gene models in the lablab annotation — ILRI / LegumeInfo
@@ -199,8 +263,42 @@ SELECT gm.genome_db_id, COUNT(*) AS members,
 On a release-sized `homology_member` this is far cheaper run as two sorted extracts joined outside
 the database than as the correlated subquery above.
 
+**Defect 7** — same gene set, emptied description column:
+
+```sql
+SELECT 'e116' AS rel, COUNT(*) AS genes,
+       SUM(description IS NOT NULL AND description<>'') AS described
+  FROM brassica_napus_core_70_116_1.gene WHERE is_current=1
+UNION ALL
+SELECT 'e114', COUNT(*), SUM(description IS NOT NULL AND description<>'')
+  FROM brassica_napus_core_69_114_1.gene WHERE is_current=1;
+-- e116  104573  104
+-- e114  104573  66227
+```
+
+Release-wide, loop that over `SHOW DATABASES LIKE '%\_core\_70\_116\_%'` pairing each core with its
+`_core_69_114_` counterpart; the totals above come from that sweep over all 267 cores. The
+user-visible figure is the same question asked of the search collections:
+
+```javascript
+// 2,427,140 in search69 -> 139,793 in search70
+db.genes.aggregate([{$group: {_id: null, described: {$sum:
+  {$cond: [{$let: {vars: {v: {$ifNull: ['$description', null]}},
+    in: {$and: [{$ne: ['$$v', null]}, {$ne: ['$$v', '']},
+                {$ne: ['$$v', 'NULL']}, {$ne: ['$$v', '\"\"']}]}}}, 1, 0]}}}}])
+```
+
+`$ifNull` before the comparison is not optional: `{$ne: ['$description', null]}` is **true** for a
+document with no `description` field at all, because a missing path yields `undefined` and BSON sorts
+`undefined` and `null` as distinct types. Comparing the raw path counts every doc that lacks the
+field as having one.
+
 ---
 
 Defects 1, 2 and 4 have been worked around in our own copies of the cores and compara; nothing
 upstream has been modified. The id mapping tables we generated for defect 1 (75,711 gene, transcript
 and translation mappings) can be supplied for a re-import.
+
+Defect 7 is the one we cannot work around. The other six are either local relabelling or affect a
+countable set of genes we can patch; 2.3 million UniProt-derived gene descriptions have no local
+source, so release 70 ships without them unless the column is repopulated upstream.
