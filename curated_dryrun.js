@@ -134,6 +134,13 @@ function summarise(docs) {
   return s;
 }
 
+// Exported so curated_patch.js can reuse the SAME chain definition rather than restating it.
+// Two copies of this pipe order would drift, and the whole point of CHAIN is that it mirrors
+// decorate.js exactly -- a patcher built on a stale copy would write docs a rebuild disagrees with.
+module.exports = {CHAIN, readDump, pipeThrough, summarise, usable, SEARCH, A, MONGO_LIB, MONGO_URI, MONGO_DB};
+
+if (require.main !== module) return;
+
 (async () => {
   const { MongoClient } = require(MONGO_LIB);
   const client = new MongoClient(MONGO_URI, {useNewUrlParser: true, useUnifiedTopology: true});
