@@ -1,6 +1,8 @@
 # Upstream data defects found building release 70
 
-Reported **2026-10-13**; defect 7 added **2026-10-30**. Source: Ensembl Plants release 70 cores and
+Reported **2026-10-13**; defect 7 added **2026-10-30**, and remediated locally **2026-10-31**
+(see [Resolution](#resolution-the-e114-cores-were-the-local-source)) --- the defect remains
+open upstream. Source: Ensembl Plants release 70 cores and
 `ensembl_compara_plants_70_116`. Every figure below was taken from the release databases, and the
 queries in [Reproducing these](#reproducing-these) return the numbers quoted.
 
@@ -14,7 +16,7 @@ Shareable version: <https://claude.ai/artifact/ECp1Ds2PbmJaYsPrdQdU4q>
 | 4 | `GCA_030347555.1` labelled cv. Natoba; INSDC says Highworth | lablab | 1 genome | Ensembl Plants |
 | 5 | 198 duplicate gene models sharing coordinates and exon structure | lablab | 396 loci | ILRI / LegumeInfo |
 | 6 | Maize v5 genes get empty pathways: reactions file carries only v4 | maize | 1,587 genes | Plant Reactome |
-| 7 | `gene.description` empty in the e116 cores where e114 had it | 225 of 267 | **2,323,799 genes** | Ensembl Plants |
+| 7 | `gene.description` empty in the e116 cores where e114 had it | 225 of 267 | **2,323,799 genes** --- since rescued locally from e114 | Ensembl Plants |
 
 Defects 1 and 2 are visible in the **published release 69** data as well. Defect 7 is new in this
 release and is, by scale, the largest of the seven: it removes a gene description from roughly one
@@ -183,8 +185,72 @@ deflines (15,504), MaizeGDB and `fix_maize_v5` (9,827) and ThaleMine (373). That
 four genomes only. For the other 263 there is nothing to fall back on, which is why 53 cores lost
 more than 90 points of coverage.
 
-We have not modified the cores for this defect, and we cannot: there is no local source for 2.3
-million UniProt-derived deflines. It needs the description column repopulated at the source.
+### Resolution: the e114 cores were the local source
+
+**The assessment first recorded here --- that there was no local source for these descriptions and
+the column had to be repopulated upstream --- was wrong.** The release-69 (e114) cores are still on
+disk, they carry the 2,374,970 descriptions intact, and for 190 of the 225 paired species the gene
+stable ids are unchanged between the two releases. That makes the rescue a join, not a re-derivation.
+
+`build/rescue_descriptions.py` generates the SQL for it. The join requires **both** the same
+`stable_id` and the same `species.production_name`, the latter read from each core's `meta` table
+rather than inferred from the database name, and it only ever fills a description that is currently
+empty:
+
+```sql
+UPDATE `brassica_napus_core_70_116_1`.gene n
+  JOIN `brassica_napus_core_69_114_1`.gene o ON o.stable_id = n.stable_id
+   SET n.description = o.description
+ WHERE n.is_current = 1 AND o.is_current = 1
+   AND (n.description IS NULL OR n.description = '')
+   AND o.description IS NOT NULL AND o.description <> '';
+```
+
+Never overwriting means any description e116 did ship wins, so the operation cannot lose upstream
+content. Two species present in two e114 cores apiece were skipped rather than guessed at. Because
+the core tables are MyISAM and give no transaction to roll back, the script emits a per-core
+`rescue_desc_bak` backup table and a matching revert script in the same pass, and refuses to run
+where a backup table already exists.
+
+Applied on 2026-10-31 across 190 species / 2,295,784 genes, then rebuilt through stages
+40 -> 50 -> 60 -> 65:
+
+| | before | after |
+| --- | --- | --- |
+| described genes, e116 cores (paired species) | 51,171 | **2,346,955** |
+| usable descriptions in `search70.genes` | 139,793 | **2,407,548** |
+| genomes below 10% coverage that had >90% in r69 | 53 | **0** --- min 91.2%, median 99.8% |
+| genes still rescuable after the run | 2,295,784 | **0** |
+
+The release-wide ledger balances to the gene against release 69:
+
+```
+search69 total                     2427124
+- retired genomes (8)                -73992
++ new genomes (42)                    62918
++ gains on shared genomes             20376
+- losses on shared genomes           -28878
+= search70 total                    2407548
+```
+
+`medicago_truncatula` is the single genome in the release still below its r69 description count
+(33,379 -> 4,501 of 50,739), and it is the one species a stable-id join cannot reach --- because of
+defect 1 at the top of this document. Release 69 shipped medicago keyed on the GFF3 `ID=` values
+(`gene36912`, `gene10054`); release 70 carries the corrected locus names
+(`MtrunA17_Chr6g0478551`). Both releases hold exactly 50,739 medicago genes and **zero ids in
+common**, so the join has nothing to match on. That is the cost of having fixed defect 1 rather than
+a second upstream fault, and it is the right trade: the ids are now correct.
+
+A coordinate join gated on an identical `assembly.accession` would recover roughly 28,878 of them,
+and is deliberately not done here --- matching a description to a gene by position is a weaker claim
+than matching it by stable id, and nothing in the result would show a reader which kind of match
+produced it.
+
+**None of this reduces what is needed upstream.** The rescue works only for species that existed in
+release 69 and kept their ids; the 42 genomes new in release 70 have no e114 core to join against and
+still carry descriptions on just 1.4% of their genes. Each future release would need this same rescue
+run against the one before it, with the recoverable set shrinking as ids turn over. The column still
+needs to be repopulated at the source.
 
 ---
 
@@ -299,6 +365,9 @@ Defects 1, 2 and 4 have been worked around in our own copies of the cores and co
 upstream has been modified. The id mapping tables we generated for defect 1 (75,711 gene, transcript
 and translation mappings) can be supplied for a re-import.
 
-Defect 7 is the one we cannot work around. The other six are either local relabelling or affect a
-countable set of genes we can patch; 2.3 million UniProt-derived gene descriptions have no local
-source, so release 70 ships without them unless the column is repopulated upstream.
+Defect 7 has since been worked around too, by joining the e116 cores back to the e114 ones on
+stable id --- 2,295,784 genes recovered, detailed under [Resolution](#resolution-the-e114-cores-were-the-local-source)
+above. That fix does not generalise: it reaches only species that were in release 69 and kept their
+ids, leaving the 42 new genomes at 1.4% coverage and medicago at 4,501 of 50,739, and it has to be
+re-run against each previous release for as long as the column keeps arriving empty. The column
+still needs to be repopulated at the source.
