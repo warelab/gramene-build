@@ -49,6 +49,14 @@ const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?for
 const SORGHUM_LUT = path.resolve(__dirname, '..', 'gramene-mongodb', 'search', 'sorghum_v5_lut.txt');
 const INCLUDE_AI = process.argv.includes('--include-ai');
 
+// Tracked beside the artifact it supports, so a rebuild resolves the same DOIs to the same PMIDs
+// without asking NCBI, and so a new resolution shows up as a reviewable diff.
+const PMID_CACHE = process.env.CURATION_PMID_CACHE
+  || path.resolve(__dirname, '..', 'gramene-mongodb', 'search', 'curation_pmid_map.tsv');
+// NCBI asks for an identifying address on E-utilities traffic; it is not used for anything else.
+const NCBI_EMAIL = process.env.NCBI_EMAIL || 'gramene@gramene.org';
+const OFFLINE = process.argv.includes('--offline');
+
 // The form's columns, in order. Validated exactly: the owner adding one question shifts every
 // column, and a shifted parse produces a plausible-looking artifact full of wrong data.
 const EXPECTED_HEADER = [
@@ -116,9 +124,159 @@ function parseOntologyTerms(cell) {
   return out;
 }
 
-function extractPmids(cell) {
-  const ids = (cell.match(/\b\d{7,8}\b/g) || []);
-  return Array.from(new Set(ids));
+// Parse the "Literature Reference" cell into typed identifiers.
+//
+// THE BUG THIS REPLACES. The old implementation was a bare /\b\d{7,8}\b/ scan over the whole
+// cell, which is wrong in both directions once curators start pasting DOIs -- and as of
+// 2026-11-01 every new row does:
+//   * "10.3389/fpls.2024.1430467" yielded PMID "1430467", a real 1992 paper about something
+//     else. The curation was about to be filed against the wrong publication.
+//   * "10.1038/srep28366" yielded nothing, so the description went in the bin: descriptions are
+//     only ever stored under a reference key.
+// So DOIs and PMC ids are matched FIRST and removed from the string before any bare-number scan,
+// because both routinely contain a 7-8 digit run.
+function parseReference(cell) {
+  const out = {pmids: [], dois: [], pmcids: [], leftover: ''};
+  if (!cell) return out;
+  let work = ' ' + cell + ' ';
+
+  // DOIs. The trailing-character class deliberately excludes sentence punctuation, and we also
+  // peel a trailing .,;:)] because "see 10.1234/abc." is common.
+  work = work.replace(/\b10\.\d{4,9}\/[^\s;,)\]"'<>]+/g, m => {
+    out.dois.push(m.replace(/[.,;:)\]]+$/, ''));
+    return ' ';
+  });
+  // PMC ids: PMC11234113 carries an 8-digit run.
+  work = work.replace(/\bPMC\d{5,9}\b/gi, m => { out.pmcids.push(m.toUpperCase()); return ' '; });
+  // Explicitly labelled PMIDs win over anything else left in the cell.
+  work = work.replace(/\bPM(?:ID|\.?\s?ID)\s*[:#]?\s*(\d{4,8})\b/gi, (m, d) => {
+    out.pmids.push(d); return ' ';
+  });
+  // Whatever bare 7-8 digit runs survive. Still a heuristic, but now it cannot see a DOI suffix.
+  (work.match(/\b\d{7,8}\b/g) || []).forEach(d => out.pmids.push(d));
+
+  out.pmids = Array.from(new Set(out.pmids));
+  out.dois = Array.from(new Set(out.dois.map(d => d.toLowerCase())));
+  out.pmcids = Array.from(new Set(out.pmcids));
+  out.leftover = work.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+// --- DOI/PMCID -> PMID, through a committed cache ----------------------------------------------
+// The cache is a tracked artifact for the same reason cshl_curated_genes.json is: the build must be
+// reproducible and must not depend on NCBI answering. A negative result is cached too (pmid "-"),
+// otherwise every build re-asks NCBI about the same handful of unresolvable DOIs forever.
+function loadPmidCache() {
+  const m = new Map();
+  let text;
+  try { text = fs.readFileSync(PMID_CACHE, 'utf8'); }
+  catch (e) { return m; }
+  text.split('\n').forEach(line => {
+    if (!line || line[0] === '#') return;
+    const f = line.split('\t');
+    if (f[0]) m.set(f[0].trim().toLowerCase(), {pmid: (f[1] || '').trim(), when: f[2] || '', how: f[3] || ''});
+  });
+  return m;
+}
+
+function savePmidCache(cache) {
+  const keys = Array.from(cache.keys()).sort();
+  const body = ['# key\tpmid\tresolved\tmethod   (pmid "-" = looked up and not found; do not re-query)']
+    .concat(keys.map(k => {
+      const v = cache.get(k);
+      return [k, v.pmid || '-', v.when, v.how].join('\t');
+    })).join('\n') + '\n';
+  fs.writeFileSync(PMID_CACHE, body);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// NCBI's PMC id converter takes up to 200 ids per request and answers for anything in PMC.
+async function idconvBatch(ids) {
+  const url = 'https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/?format=json'
+            + '&tool=gramene&email=' + encodeURIComponent(NCBI_EMAIL)
+            + '&ids=' + ids.map(encodeURIComponent).join(',');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const res = await fetch(url, {signal: ctrl.signal, redirect: 'follow'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    const found = new Map();
+    (body.records || []).forEach(r => {
+      const key = String(r['requested-id'] || r.doi || r.pmcid || '').toLowerCase();
+      if (key && r.pmid) found.set(key, String(r.pmid));
+    });
+    return found;
+  } finally { clearTimeout(timer); }
+}
+
+// Fallback for a DOI that is not in PMC: ask PubMed directly. One id per call, so this is the
+// throttled path and runs only on idconv's misses.
+async function esearchDoi(doi) {
+  const url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json'
+            + '&tool=gramene&email=' + encodeURIComponent(NCBI_EMAIL)
+            + '&term=' + encodeURIComponent(doi + '[DOI]');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(url, {signal: ctrl.signal});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const body = await res.json();
+    const list = (body.esearchresult && body.esearchresult.idlist) || [];
+    // Only trust an unambiguous single hit. A DOI matching two PubMed records means something is
+    // wrong with the DOI, and guessing which record the curator meant is not ours to do.
+    return list.length === 1 ? String(list[0]) : '';
+  } finally { clearTimeout(timer); }
+}
+
+async function resolveToPmids(keys, cache, stats) {
+  const want = keys.filter(k => !cache.has(k));
+  if (!want.length) return;
+  if (OFFLINE) {
+    stats.offlineSkipped = want.length;
+    console.error('--offline: ' + want.length + ' identifiers left unresolved (not in the cache)');
+    return;
+  }
+  const stamp = new Date().toISOString().slice(0, 10);
+  console.error('resolving ' + want.length + ' identifiers via NCBI...');
+
+  for (let i = 0; i < want.length; i += 200) {
+    const batch = want.slice(i, i + 200);
+    let found = new Map();
+    try { found = await idconvBatch(batch); }
+    catch (e) { console.error('  idconv batch failed (' + e.message + ') -- falling back per id'); }
+    batch.forEach(k => {
+      if (found.has(k)) { cache.set(k, {pmid: found.get(k), when: stamp, how: 'idconv'}); }
+    });
+    if (i + 200 < want.length) await sleep(400);
+  }
+
+  const stillMissing = want.filter(k => !cache.has(k));
+  for (const k of stillMissing) {
+    if (!/^10\./.test(k)) { cache.set(k, {pmid: '-', when: stamp, how: 'idconv-miss'}); continue; }
+    let pmid = '';
+    try { pmid = await esearchDoi(k); }
+    catch (e) { console.error('  esearch failed for ' + k + ': ' + e.message); }
+    cache.set(k, {pmid: pmid || '-', when: stamp, how: pmid ? 'esearch' : 'notfound'});
+    await sleep(350);                      // NCBI allows 3 requests/second without an API key
+  }
+}
+
+// Is this "description" actually a description, or did the curator put the symbol in the wrong
+// column? The sheet has rows whose entire gene-function cell is "Dw1". Storing that as the
+// description of a paper is worse than storing nothing, because it displaces the real text when
+// another row supplies it.
+// The test is identity with the gene's OWN name forms, NOT length. A first attempt here also
+// rejected anything under 20 characters, which threw away 335 descriptions including "Zn
+// transferase", "Phospholipase 1" and "starch synthase" -- short, but real content that the
+// Curated publications tab displays today. Short text is handled by PREFERRING a longer
+// description when two rows describe the same reference, not by discarding the short one.
+function descriptionIsSubstantive(text, junkForms) {
+  if (!text) return false;
+  const norm = String(text).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (!norm) return false;
+  return !junkForms.has(norm);
 }
 
 // Curators paste whatever identifier is in front of them, and a large share of the sheet's ids are
@@ -175,7 +333,9 @@ function loadSorghumLut() {
 
   // --- pass 1: parse and bucket rows by the id as written -----------------------------------
   const byRawId = new Map();
-  const stats = {noId: 0, trimmed: 0, excludedStatus: {}, badTerms: [], badCodes: {}, noPmid: 0};
+  const stats = {noId: 0, trimmed: 0, excludedStatus: {}, badTerms: [], badCodes: {},
+                 refKeys: 0, doiResolved: 0, pmcResolved: 0, doiUnresolved: [], noRefId: [],
+                 junkDescriptions: [], descUpgrades: 0, offlineSkipped: 0};
   for (const row of data) {
     const rawId = get(row, C.ID);
     if (!rawId) { stats.noId++; continue; }
@@ -259,6 +419,34 @@ function loadSorghumLut() {
 
   await client.close();
 
+  // --- pass 2b: standardize every literature reference onto a PMID ---------------------------
+  // Done for the whole sheet at once, before any per-gene work, so NCBI is asked once per distinct
+  // identifier rather than once per citing row -- 18 of the new rows cite only 16 distinct DOIs,
+  // and three different genes cite 10.3389/fpls.2024.1430467.
+  const refByRow = new Map();          // row -> parseReference() result
+  const needResolving = new Set();
+  for (const rowsForId of byRawId.values()) {
+    for (const row of rowsForId) {
+      const r = parseReference(get(row, C.REF));
+      refByRow.set(row, r);
+      r.dois.forEach(d => needResolving.add(d));
+      r.pmcids.forEach(c => needResolving.add(c.toLowerCase()));
+    }
+  }
+  const pmidCache = loadPmidCache();
+  const cacheSizeBefore = pmidCache.size;
+  stats.refKeys = needResolving.size;
+  await resolveToPmids(Array.from(needResolving).sort(), pmidCache, stats);
+  if (pmidCache.size !== cacheSizeBefore) {
+    savePmidCache(pmidCache);
+    console.error('pmid cache: ' + cacheSizeBefore + ' -> ' + pmidCache.size + ' entries, wrote ' +
+                  PMID_CACHE);
+  }
+  const toPmid = k => {
+    const v = pmidCache.get(String(k).toLowerCase());
+    return v && v.pmid && v.pmid !== '-' ? v.pmid : '';
+  };
+
   // --- pass 3: emit one entry per resolved gene ----------------------------------------------
   const entries = new Map();           // gene _id -> entry
   const rejects = [];
@@ -268,18 +456,30 @@ function loadSorghumLut() {
 
     if (!entries.has(geneId)) {
       entries.set(geneId, {
-        locus: geneId, gene_symbols: [], gene_names: [], references: {},
+        locus: geneId, symbolByNorm: new Map(), nameByNorm: new Map(), refs: new Map(),
         po: [], to: [], go: [], chebi: [], evidence: {}, status: []
       });
     }
     const e = entries.get(geneId);
 
     for (const row of rowsForId) {
+      // Forms of this gene's own identity, normalized. Used to reject a "symbol" that is just the
+      // id, and a "description" that is just the symbol.
+      const junk = new Set([rawId, geneId].map(v => v.toLowerCase().replace(/[^a-z0-9]+/g, '')));
+
       const sym = get(row, C.SYMBOL);
-      // A "symbol" that is just the gene id carries no information; the sheet has several.
-      if (sym && sym !== rawId && sym !== geneId) e.gene_symbols.push(sym);
+      const symNorm = sym.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      // Dedupe symbols case-insensitively, keeping the first spelling seen. The sheet carries both
+      // "Dw1" and "dw1" for the same gene, and emitting both makes the second a bogus synonym.
+      if (sym && !junk.has(symNorm) && !e.symbolByNorm.has(symNorm)) {
+        e.symbolByNorm.set(symNorm, sym);
+      }
+      if (symNorm) junk.add(symNorm);
+
       const nm = get(row, C.NAME);
-      if (nm) e.gene_names.push(nm);
+      const nmNorm = nm.toLowerCase().replace(/[^a-z0-9]+/g, '');
+      if (nm && !junk.has(nmNorm) && !e.nameByNorm.has(nmNorm)) e.nameByNorm.set(nmNorm, nm);
+      if (nmNorm) junk.add(nmNorm);
 
       const codes = splitCodes(get(row, C.EVID)).filter(c => {
         if (GO_EVIDENCE[c]) return true;
@@ -296,13 +496,45 @@ function loadSorghumLut() {
         if (rowCode && !e.evidence[t.id]) e.evidence[t.id] = rowCode;
       });
 
-      const pmids = extractPmids(get(row, C.REF));
-      if (!pmids.length && get(row, C.REF)) stats.noPmid++;
+      // Build this row's reference keys. A DOI that resolves becomes its PMID, which is what
+      // collapses "cited as a DOI here, as a PMID there" into one reference on the gene.
+      const parsed = refByRow.get(row) || {pmids: [], dois: [], pmcids: []};
+      const keys = [];
+      parsed.pmids.forEach(p => keys.push({key: p, via: 'pmid'}));
+      parsed.dois.forEach(d => {
+        const p = toPmid(d);
+        if (p) { keys.push({key: p, via: 'doi->pmid'}); stats.doiResolved++; }
+        // Unresolvable: keep it as a DOI rather than discard the curation. curated_source.js
+        // already routes a "DOI:"-prefixed key to a DOI xref, so this needs no consumer change.
+        else { keys.push({key: 'DOI:' + d, via: 'doi'}); stats.doiUnresolved.push(rawId + ': ' + d); }
+      });
+      parsed.pmcids.forEach(c => {
+        const p = toPmid(c);
+        if (p) { keys.push({key: p, via: 'pmcid->pmid'}); stats.pmcResolved++; }
+      });
+      if (!keys.length && get(row, C.REF)) {
+        stats.noRefId.push(rawId + ': ' + get(row, C.REF).slice(0, 70));
+      }
+
       const desc = get(row, C.FUNC);
-      pmids.forEach(p => {
-        // One description per PMID; the first row to cite it wins. NOTE: the submitter's email is
-        // deliberately NOT carried through -- this artifact is committed and served publicly.
-        if (!e.references[p]) e.references[p] = {description: desc};
+      const good = descriptionIsSubstantive(desc, junk);
+      if (desc && !good) stats.junkDescriptions.push(rawId + ': ' + JSON.stringify(desc.slice(0, 40)));
+
+      keys.forEach(({key, via}) => {
+        const prev = e.refs.get(key);
+        // Several rows can cite one paper for one gene. Prefer a substantive description over a
+        // junk one, and the longer of two substantive ones -- the sheet's older rows often hold
+        // only the symbol where a newer row has the real sentence. NOTE: the submitter's email is
+        // deliberately NOT carried through; this artifact is committed and served publicly.
+        if (!prev) {
+          e.refs.set(key, {description: good ? desc : '', via: via, merged: 1});
+        } else {
+          prev.merged++;
+          if (good && (!prev.description || desc.length > prev.description.length)) {
+            if (prev.description) stats.descUpgrades++;
+            prev.description = desc;
+          }
+        }
       });
 
       const st = get(row, C.STATUS);
@@ -310,15 +542,31 @@ function loadSorghumLut() {
     }
   }
 
-  const out = Array.from(entries.values()).map(e => ({
-    locus: e.locus,
-    gene_symbols: Array.from(new Set(e.gene_symbols)).join(', '),
-    gene_names: Array.from(new Set(e.gene_names)).join(', '),
-    references: e.references,
-    po: e.po, to: e.to, go: e.go, chebi: e.chebi,
-    evidence: e.evidence,
-    status: e.status.join(', ')
-  })).sort((a, b) => (a.locus < b.locus ? -1 : a.locus > b.locus ? 1 : 0));
+  const out = Array.from(entries.values()).map(e => {
+    const symbols = Array.from(e.symbolByNorm.values());
+    const names = Array.from(e.nameByNorm.values());
+    const references = {};
+    // Sort reference keys so the artifact is byte-stable across runs: an unstable key order makes
+    // every regeneration look like a change in git and defeats the incremental diff.
+    Array.from(e.refs.keys()).sort().forEach(k => { references[k] = {description: e.refs.get(k).description}; });
+    return {
+      locus: e.locus,
+      // NOTE: `gene_names` is emitted but read by nothing -- curated_source.js only ever looks at
+      // gene_symbols -- so the sheet's "Gene name used in publication" column (65 rows) is carried
+      // here and goes no further. Folding it into gene_symbols was tried and backed out: it turns
+      // published product names into searchable synonyms on 67 loci, and because curated_source.js
+      // promotes the first symbol to gene.name for any gene still named after its own id, it would
+      // also title genes things like "Zn-regulated GTPase metalloprotein activator". Whether those
+      // belong as synonyms is a curation decision, not a parsing one.
+      gene_symbols: symbols.join(', '),
+      gene_names: names.join(', '),
+      references: references,
+      po: e.po.slice().sort(), to: e.to.slice().sort(),
+      go: e.go.slice().sort(), chebi: e.chebi.slice().sort(),
+      evidence: e.evidence,
+      status: e.status.join(', ')
+    };
+  }).sort((a, b) => (a.locus < b.locus ? -1 : a.locus > b.locus ? 1 : 0));
 
   // --- coverage report ------------------------------------------------------------------------
   const refCount = out.reduce((n, e) => n + Object.keys(e.references).length, 0);
@@ -334,7 +582,29 @@ function loadSorghumLut() {
   console.error('  UNRESOLVED (reported below): ' + rejects.length);
   console.error('  references emitted         : ' + refCount);
   console.error('  ontology terms emitted     : ' + termCount);
-  console.error('  references with no PMID    : ' + stats.noPmid);
+  console.error('');
+  console.error('=== literature references ===');
+  console.error('  distinct DOI/PMC ids seen  : ' + stats.refKeys);
+  console.error('  DOI citations -> a PMID    : ' + stats.doiResolved + ' (rows, not distinct ids)');
+  console.error('  PMC citations -> a PMID    : ' + stats.pmcResolved);
+  console.error('  DOI citations kept as DOI  : ' + stats.doiUnresolved.length);
+  stats.doiUnresolved.slice(0, 15).forEach(d => console.error('     ' + d));
+  if (stats.offlineSkipped) {
+    console.error('  NOT resolved (--offline)   : ' + stats.offlineSkipped +
+                  '  <-- rerun without --offline to standardize these');
+  }
+  if (stats.noRefId.length) {
+    console.error('  reference cells with no usable identifier: ' + stats.noRefId.length);
+    stats.noRefId.slice(0, 10).forEach(d => console.error('     ' + d));
+  }
+  if (stats.junkDescriptions.length) {
+    console.error('  "descriptions" rejected as not a description: ' + stats.junkDescriptions.length);
+    console.error('    (the gene symbol or id typed into the function column)');
+    stats.junkDescriptions.slice(0, 15).forEach(d => console.error('     ' + d));
+  }
+  if (stats.descUpgrades) {
+    console.error('  references whose description was replaced by a better one: ' + stats.descUpgrades);
+  }
   if (Object.keys(stats.badCodes).length) {
     console.error('  evidence codes not in the GO set (left for the curators, not rewritten):');
     Object.keys(stats.badCodes).sort().forEach(c =>

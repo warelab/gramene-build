@@ -31,6 +31,7 @@ ST    := stages
 .PHONY: all mongo solr index status running clean-stamps add-studies \
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
         refresh-grassius refresh-attributes 29_curated_sources refresh-curated \
+        refresh-curated-dry refresh-curated-incremental \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
@@ -203,6 +204,19 @@ refresh-grassius:
 	rm -f $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
 	$(MAKE) all
+
+# Pick up new rows from the curation sheet WITHOUT a rebuild: regenerate the artifact, diff it,
+# and write only the changed genes into mongo and the live core by atomic update (~40min against
+# refresh-curated's ~15h). Dry run first -- it writes nothing and prints what would change.
+#
+# This is the path a monthly refresh should use. refresh-curated below stays the fallback for a
+# change this one refuses: anything outside name / synonyms / curated literature, and the ontology
+# terms it defers because ancestor_adder.js expands those during decorate.
+refresh-curated-dry:
+	bash refresh_curated_incremental.sh
+
+refresh-curated-incremental:
+	bash refresh_curated_incremental.sh --apply
 
 # refresh the curated-gene sources (the in-house curation sheet + MaizeGDB names) and push them
 # through to the served index. 50 -> 60 -> 65 only, deliberately skipping 52 and 58.

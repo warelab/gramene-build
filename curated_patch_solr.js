@@ -52,7 +52,8 @@ async function solrUpdate(body, commit) {
   for (let i = 0; i < ids.length; i += 500) {
     const b = ids.slice(i, i + 500);
     const j = await solrSelect({q: '{!terms f=id separator="' + SEP + '"}' + b.join(SEP),
-                                fl: 'id,name,synonyms,_terms', rows: String(b.length), wt: 'json'});
+                                fl: 'id,name,synonyms,_terms,PUBMED__xrefs,DOI__xrefs,capabilities',
+                                rows: String(b.length), wt: 'json'});
     (j.response ? j.response.docs : []).forEach(d => before[d.id] = d);
   }
   const found = Object.keys(before).length;
@@ -64,21 +65,53 @@ async function solrUpdate(body, commit) {
 
   const added = new Set(), removed = new Set();
   const updates = [];
+  // Capability tokens a curation refresh can legitimately move. `pubs` appears the moment a gene has
+  // any PUBMED xref; `xrefs` the moment it has a non-PUBMED one, which a DOI-keyed reference is.
+  const CURATION_CAPS = ['pubs', 'xrefs'];
+  const capStats = {added: 0, removed: 0};
   ids.forEach(id => {
     const n = byId[id], o = before[id];
     const nt = n._terms || [], ot = o._terms || [];
     const nset = new Set(nt), oset = new Set(ot);
     nt.forEach(t => { if (!oset.has(t)) added.add(t); });
     ot.forEach(t => { if (!nset.has(t)) removed.add(t); });
-    updates.push({
+
+    const u = {
       id: id,
       name:     {set: n.name === undefined ? null : n.name},
       synonyms: {set: n.synonyms === undefined ? null : n.synonyms},
       _terms:   {set: nt}
+    };
+
+    // Literature xref fields. `set` is correct here for the same reason it is for _terms: the value
+    // was recomputed by mongo2solr.join.js from the updated mongo doc, so it is the complete list
+    // for that field -- including references from geneRIF and rap-db, which this refresh does not
+    // touch but which share the field. A null clears a field whose last entry went away.
+    ['PUBMED__xrefs', 'DOI__xrefs'].forEach(f => {
+      const nv = n[f], ov = o[f];
+      const same = JSON.stringify((nv || []).slice().sort()) === JSON.stringify((ov || []).slice().sort());
+      if (!same) u[f] = {set: nv === undefined ? null : nv};
     });
+
+    // capabilities is NEVER `set`: add_attributes.pl and 62_attr_atomic.sh append
+    // expression_attributes / grassius_homolog / MAKER / VEP after the dump, so they are not in the
+    // recomputed doc and a `set` would delete them from 1.5M genes. add-distinct and remove touch
+    // only the token named.
+    const ncap = new Set(n.capabilities || []), ocap = new Set(o.capabilities || []);
+    const capAdd = CURATION_CAPS.filter(c => ncap.has(c) && !ocap.has(c));
+    const capDel = CURATION_CAPS.filter(c => !ncap.has(c) && ocap.has(c));
+    if (capAdd.length) { u.capabilities = {'add-distinct': capAdd}; capStats.added += capAdd.length; }
+    else if (capDel.length) { u.capabilities = {remove: capDel}; capStats.removed += capDel.length; }
+
+    updates.push(u);
   });
   console.log('terms newly present : ' + added.size);
   console.log('terms now absent    : ' + removed.size);
+  console.log('xref fields written : ' +
+    updates.filter(u => u.PUBMED__xrefs).length + ' PUBMED, ' +
+    updates.filter(u => u.DOI__xrefs).length + ' DOI');
+  console.log('capability tokens   : +' + capStats.added + ' / -' + capStats.removed +
+              '  (add-distinct/remove only, never set)');
   fs.writeFileSync(process.env.TERMS_DELTA || '/tmp/curated_terms_delta.json',
     JSON.stringify({added: Array.from(added), removed: Array.from(removed)}), 'utf8');
   console.log('wrote term delta to ' + (process.env.TERMS_DELTA || '/tmp/curated_terms_delta.json'));
