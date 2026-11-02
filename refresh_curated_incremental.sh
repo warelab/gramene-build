@@ -18,15 +18,15 @@
 #
 # Dry run by default. Nothing is written without --apply.
 #
-# usage: bash refresh_curated_incremental.sh [--apply] [--offline]
+# usage: bash refresh_curated_incremental.sh [--apply] [--no-ncbi]
 set -o pipefail
 cd /usr/local/gramene/release70/build || exit 2
 
-APPLY=""; OFFLINE=""
+APPLY=""; NO_NCBI=""
 for a in "$@"; do
   case "$a" in
     --apply)   APPLY="--apply" ;;
-    --offline) OFFLINE="--offline" ;;
+    --no-ncbi) NO_NCBI="--no-ncbi" ;;
     *) echo "unknown argument: $a" >&2; exit 2 ;;
   esac
 done
@@ -50,7 +50,7 @@ log "incremental curated refresh  (${APPLY:-dry run})  work=${WORK}"
 
 # --- 1. regenerate -----------------------------------------------------------------------------
 log "---- regenerating the artifact from the sheet"
-node fetch_cshl_curation.js $OFFLINE > "${WORK}/new.json" 2> "${WORK}/fetch.err"
+node fetch_cshl_curation.js $NO_NCBI > "${WORK}/new.json" 2> "${WORK}/fetch.err"
 rc=$?
 cat "${WORK}/fetch.err" | tee -a "$CHAIN"
 [ $rc -eq 0 ] || die "fetch_cshl_curation.js exited ${rc} -- artifact NOT replaced"

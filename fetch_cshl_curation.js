@@ -17,7 +17,7 @@
 //     chebi:[], evidence:{<term>:<code>}, status}]
 // Coverage and every rejected row go to stderr: unresolved ids are REPORTED, never silently dropped.
 //
-// Usage: MONGO_URI=... MONGO_DB=search70 node fetch_cshl_curation.js [--include-ai]
+// Usage: MONGO_URI=... MONGO_DB=search70 node fetch_cshl_curation.js [--include-ai] [--no-ncbi]
 'use strict';
 
 const path = require('path');
@@ -55,7 +55,9 @@ const PMID_CACHE = process.env.CURATION_PMID_CACHE
   || path.resolve(__dirname, '..', 'gramene-mongodb', 'search', 'curation_pmid_map.tsv');
 // NCBI asks for an identifying address on E-utilities traffic; it is not used for anything else.
 const NCBI_EMAIL = process.env.NCBI_EMAIL || 'gramene@gramene.org';
-const OFFLINE = process.argv.includes('--offline');
+// Skips the NCBI lookups only -- the sheet fetch still needs the network, so this is not an
+// offline mode. Use it to keep a build off E-utilities and accept whatever the cache holds.
+const NO_NCBI = process.argv.includes('--no-ncbi');
 
 // The form's columns, in order. Validated exactly: the owner adding one question shifts every
 // column, and a shifted parse produces a plausible-looking artifact full of wrong data.
@@ -233,9 +235,9 @@ async function esearchDoi(doi) {
 async function resolveToPmids(keys, cache, stats) {
   const want = keys.filter(k => !cache.has(k));
   if (!want.length) return;
-  if (OFFLINE) {
+  if (NO_NCBI) {
     stats.offlineSkipped = want.length;
-    console.error('--offline: ' + want.length + ' identifiers left unresolved (not in the cache)');
+    console.error('--no-ncbi: ' + want.length + ' identifiers left unresolved (not in the cache)');
     return;
   }
   const stamp = new Date().toISOString().slice(0, 10);
@@ -590,8 +592,8 @@ function loadSorghumLut() {
   console.error('  DOI citations kept as DOI  : ' + stats.doiUnresolved.length);
   stats.doiUnresolved.slice(0, 15).forEach(d => console.error('     ' + d));
   if (stats.offlineSkipped) {
-    console.error('  NOT resolved (--offline)   : ' + stats.offlineSkipped +
-                  '  <-- rerun without --offline to standardize these');
+    console.error('  NOT resolved (--no-ncbi)   : ' + stats.offlineSkipped +
+                  '  <-- rerun without --no-ncbi to standardize these');
   }
   if (stats.noRefId.length) {
     console.error('  reference cells with no usable identifier: ' + stats.noRefId.length);
