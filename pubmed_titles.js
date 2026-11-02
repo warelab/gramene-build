@@ -26,6 +26,9 @@ const fs = require('fs');
 const path = require('path');
 const dry = require('./curated_dryrun.js');
 const { usable, SEARCH, MONGO_LIB, MONGO_URI, MONGO_DB } = dry;
+// The exact transform the decorate adder applies, imported rather than restated: if the patch
+// filled differently from the rebuild, the next full decorate would silently undo this work.
+const { fillGene } = require(path.resolve(SEARCH, 'pubmed_title_adder.js'));
 
 const APPLY   = process.argv.includes('--apply');
 const NO_NCBI = process.argv.includes('--no-ncbi');
@@ -224,7 +227,9 @@ async function resolveTitles(pmids, cache, stats) {
   // Re-read each gene's xrefs rather than trusting the array index recorded during the scan: the
   // positional path "xrefs.3.text" is only correct if nothing reordered the array in between, and a
   // read-modify-write of the whole array cannot be wrong about which reference it is filling.
-  let touchedGenes = 0, filledSlots = 0, stillBlank = 0, examples = [];
+  const lut = {};
+  cache.forEach((v, k) => { if (v.title && v.title !== '-') lut[k] = v.title; });
+  let touchedGenes = 0, filledSlots = 0, splitRecs = 0, stillBlank = 0, examples = [];
   let ops = [];
   async function flush() {
     if (!ops.length) return;
@@ -243,23 +248,17 @@ async function resolveTitles(pmids, cache, stats) {
     chunk.forEach(c => byId[c._id] = c);
     const live = await genes.find({_id: {$in: Object.keys(byId)}}, {projection: {xrefs: 1}}).toArray();
     live.forEach(g => {
-      let changed = 0;
-      const next = (g.xrefs || []).map(x => {
-        if (x.db !== 'PUBMED' || usable(x.text)) return x;
-        // One record, one paper: every PUBMED xref in this collection carries exactly one id, which
-        // is what lets a single `text` be the title of a single paper. A record with several ids
-        // would have no one title to carry, so it is left alone and counted.
-        const ids = (x.ids || []).map(String);
-        if (ids.length !== 1) { stillBlank++; return x; }
-        const v = cache.get(ids[0]);
-        if (!v || !v.title || v.title === '-') { stillBlank++; return x; }
-        changed++;
-        if (examples.length < 6) examples.push(g._id + '  ' + ids[0] + '  ' + v.title.slice(0, 90));
-        return Object.assign({}, x, {text: v.title});
-      });
-      if (!changed) return;
-      touchedGenes++; filledSlots += changed;
-      ops.push({updateOne: {filter: {_id: g._id}, update: {$set: {xrefs: next}}}});
+      const r = fillGene(g, lut);
+      // Whatever fillGene left without text is genuinely unfillable: no title for that PMID, or a
+      // multi-PMID record where not one of its PMIDs resolved.
+      stillBlank += (g.xrefs || []).filter(x => x.db === 'PUBMED' && !usable(x.text)).length;
+      if (!r.filled && !r.split) return;
+      touchedGenes++; filledSlots += r.filled; splitRecs += r.split;
+      if (examples.length < 6) {
+        const f = (g.xrefs || []).find(x => x.db === 'PUBMED' && usable(x.text));
+        if (f) examples.push(g._id + '  ' + (f.ids || []).join(',') + '  ' + String(f.text).slice(0, 88));
+      }
+      ops.push({updateOne: {filter: {_id: g._id}, update: {$set: {xrefs: g.xrefs}}}});
     });
     await flush();
     if ((i / BATCH) % 20 === 0) process.stderr.write('\r  ' + Math.min(i + BATCH, lines.length) + '/' + lines.length);
@@ -267,9 +266,10 @@ async function resolveTitles(pmids, cache, stats) {
   await flush();
   process.stderr.write('\r');
 
-  console.log('\n  genes to update      : ' + touchedGenes);
-  console.log('  reference slots filled: ' + filledSlots);
-  console.log('  still blank          : ' + stillBlank + '  (no title from PubMed, or a multi-id record)');
+  console.log('\n  genes to update        : ' + touchedGenes);
+  console.log('  reference titles filled: ' + filledSlots);
+  console.log('  multi-PMID records split: ' + splitRecs + '  (one record per paper, each with its own title)');
+  console.log('  still blank            : ' + stillBlank + '  (PubMed had no title for that PMID)');
   if (examples.length) { console.log('\nsample:'); examples.forEach(e => console.log('  ' + e)); }
 
   if (!APPLY) console.log('\n(dry run -- re-run with --apply to write mongo)');
