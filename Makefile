@@ -33,6 +33,7 @@ ST    := stages
         refresh-grassius refresh-attributes 29_curated_sources refresh-curated \
         refresh-curated-dry refresh-curated-incremental \
         pubmed-titles-dry pubmed-titles \
+        pubmed-solr-dry pubmed-solr \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
@@ -237,6 +238,21 @@ pubmed-titles-dry:
 
 pubmed-titles:
 	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node pubmed_titles.js --apply
+
+# Reconcile the live genes core's PUBMED__xrefs with mongo by atomic update. Needed because
+# mongo2solr.join.js used to index only xref.ids[0], so a reference citing two papers put one in the
+# index and dropped the other -- 1,016 pmid occurrences across 996 medicago records. The code is
+# fixed, so a full rebuild no longer needs this; it is the no-rebuild route to the same index.
+#
+# Writes PUBMED__xrefs only. PUBMED ids never enter _terms, so there is no terms.tsv append and no
+# stage 65 after it -- unlike every other curated-literature change.
+pubmed-solr-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node pubmed_solr_patch.js
+
+pubmed-solr:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node pubmed_solr_patch.js --apply
 
 # refresh the curated-gene sources (the in-house curation sheet + MaizeGDB names) and push them
 # through to the served index. 50 -> 60 -> 65 only, deliberately skipping 52 and 58.
