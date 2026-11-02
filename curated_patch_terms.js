@@ -11,7 +11,9 @@
 // usage: node curated_patch_terms.js <genesCoreUrl> <terms.tsv> <delta.json> [--apply]
 'use strict';
 const fs = require('fs');
-const readline = require('readline');
+const {Transform, Writable} = require('stream');
+const {pipeline} = require('stream/promises');
+const {StringDecoder} = require('string_decoder');
 
 const CORE = process.argv[2], TSV = process.argv[3], DELTA = process.argv[4];
 const APPLY = process.argv.includes('--apply');
@@ -56,22 +58,57 @@ async function facetTaxa(term) {
   const key = {};
   affected.forEach(t => { key[JSON.stringify(t)] = t; });
 
-  const out = APPLY ? fs.createWriteStream(TSV + '.new') : null;
+  // The 47M-row scan is a stream pipeline, NOT `for await` over readline. readline closes as soon as
+  // its input ends, and if the consumer happens to be suspended on a `drain` at that moment, the async
+  // iterator's next resume() throws ERR_USE_AFTER_CLOSE. That is a race against the end of a 1.1 GB
+  // file -- it survived one run of this script and killed the next -- so backpressure is left to the
+  // stream machinery instead of being hand-rolled. StringDecoder (not chunk.toString) is what keeps a
+  // multi-byte character split across a chunk boundary intact.
   let kept = 0, dropped = 0, total = 0;
-  const rl = readline.createInterface({input: fs.createReadStream(TSV), crlfDelay: Infinity});
-  for await (const line of rl) {
-    if (!line) continue;
-    total++;
-    const tab = line.lastIndexOf('\t');
-    const qterm = tab < 0 ? line : line.slice(0, tab);
-    if (key.hasOwnProperty(qterm)) { dropped++; continue; }
-    kept++;
-    if (out && !out.write(line + '\n')) await new Promise(r => out.once('drain', r));
-  }
+  const dec = new StringDecoder('utf8');
+  let tail = '';
+  const filter = new Transform({
+    transform(chunk, enc, cb) {
+      const s = tail + dec.write(chunk);
+      const nl = s.lastIndexOf('\n');
+      if (nl < 0) { tail = s; return cb(); }
+      tail = s.slice(nl + 1);
+      let keepBuf = '';
+      for (const line of s.slice(0, nl).split('\n')) {
+        if (!line) continue;
+        total++;
+        const tab = line.lastIndexOf('\t');
+        const qterm = tab < 0 ? line : line.slice(0, tab);
+        if (key.hasOwnProperty(qterm)) { dropped++; continue; }
+        kept++;
+        keepBuf += line + '\n';
+      }
+      cb(null, keepBuf);
+    },
+    flush(cb) {
+      const line = (tail + dec.end()).replace(/\n$/, '');
+      if (!line) return cb();
+      total++;
+      const tab = line.lastIndexOf('\t');
+      const qterm = tab < 0 ? line : line.slice(0, tab);
+      if (key.hasOwnProperty(qterm)) { dropped++; return cb(); }
+      kept++;
+      cb(null, line + '\n');
+    }
+  });
+
+  await pipeline(
+    fs.createReadStream(TSV),
+    filter,
+    APPLY ? fs.createWriteStream(TSV + '.new')
+          : new Writable({write(c, e, cb) { cb(); }})
+  );
   console.log('  scanned ' + total + ' rows: kept ' + kept + ', dropped ' + dropped);
 
   if (!APPLY) { console.log('\n(dry run -- re-run with --apply to rewrite ' + TSV + ')'); process.exit(0); }
 
+  // Appended in a second pass, opened for append, because pipeline() closes the stream it wrote to.
+  const out = fs.createWriteStream(TSV + '.new', {flags: 'a'});
   let written = 0;
   for (const t of affected) {
     const q = JSON.stringify(t);
