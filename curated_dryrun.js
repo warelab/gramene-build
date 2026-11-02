@@ -58,6 +58,7 @@ const CHAIN = [
   ['rapdb',             () => require(A('rapdb'))()],
   ['curated',           () => require(A('curated'))()],
   ['generifs',          () => require(A('generifs'))(Number(process.env.REDIS_GENERIF_DB || 3))],
+  ['pubmedTitles',      () => require(A('pubmed_title_adder'))()],
   ['qtls',              () => require(A('addQtlXrefs'))()],
 ];
 

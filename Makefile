@@ -32,6 +32,7 @@ ST    := stages
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
         refresh-grassius refresh-attributes 29_curated_sources refresh-curated \
         refresh-curated-dry refresh-curated-incremental \
+        pubmed-titles-dry pubmed-titles \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
@@ -217,6 +218,25 @@ refresh-curated-dry:
 
 refresh-curated-incremental:
 	bash refresh_curated_incremental.sh --apply
+
+# Fill the gene page's "Title/Description" column for literature references that arrived without
+# one. The references that come off the Ensembl cores carry no text at all -- every medicago
+# reference is of that kind -- so that column renders empty for them.
+#
+# mongo-only: mongo2solr.join.js builds PUBMED__xrefs from xref.ids and drops `text` and `source`,
+# so there is nothing in the index to update. No 60, no 65, no terms.tsv.
+#
+# The PMID -> title table it builds ($(SEARCH)/pubmed_titles.tsv) must be COMMITTED: decorate
+# rebuilds every gene doc from the stage-40 dumps, and search/pubmed_title_adder.js is what replays
+# the titles from that file during 50_genes_decorate. Without the commit, the next full build drops
+# them all again.
+#
+# Run it after a build, not before: the worklist comes from scanning the decorated collection.
+pubmed-titles-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node pubmed_titles.js
+
+pubmed-titles:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node pubmed_titles.js --apply
 
 # refresh the curated-gene sources (the in-house curation sheet + MaizeGDB names) and push them
 # through to the served index. 50 -> 60 -> 65 only, deliberately skipping 52 and 58.
