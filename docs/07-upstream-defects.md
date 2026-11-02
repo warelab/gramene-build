@@ -2,7 +2,8 @@
 
 Reported **2026-10-13**; defect 7 added **2026-10-30**, and remediated locally **2026-10-31**
 (see [Resolution](#resolution-the-e114-cores-were-the-local-source)) --- the defect remains
-open upstream. Source: Ensembl Plants release 70 cores and
+open upstream. Defects 8 and 9 added **2026-11-02**, both still open and both user-visible on gene
+pages today. Source: Ensembl Plants release 70 cores and
 `ensembl_compara_plants_70_116`. Every figure below was taken from the release databases, and the
 queries in [Reproducing these](#reproducing-these) return the numbers quoted.
 
@@ -17,10 +18,13 @@ Shareable version: <https://claude.ai/artifact/ECp1Ds2PbmJaYsPrdQdU4q>
 | 5 | 198 duplicate gene models sharing coordinates and exon structure | lablab | 396 loci | ILRI / LegumeInfo |
 | 6 | Maize v5 genes get empty pathways: reactions file carries only v4 | maize | 1,587 genes | Plant Reactome |
 | 7 | `gene.description` empty in the e116 cores where e114 had it | 225 of 267 | **2,323,799 genes** --- since rescued locally from e114 | Ensembl Plants |
+| 8 | 6 `PUBMED` xrefs that are not PMIDs; one cites an unrelated paper | medicago | 6 accessions, 25 genes | Ensembl Plants / LeGOO |
+| 9 | A GeneRIF test record published as a gene annotation | arabidopsis | 1 gene | NCBI GeneRIF |
 
 Defects 1 and 2 are visible in the **published release 69** data as well. Defect 7 is new in this
-release and is, by scale, the largest of the seven: it removes a gene description from roughly one
-plant gene in seven across the whole site.
+release and is, by scale, the largest of the nine: it removes a gene description from roughly one
+plant gene in seven across the whole site. Defects 8 and 9 are the smallest by count and the only
+two that put a *wrong* statement on a gene page rather than a missing one.
 
 ---
 
@@ -254,6 +258,63 @@ needs to be repopulated at the source.
 
 ---
 
+## 8. Six medicago `PUBMED` xrefs are not PubMed identifiers
+
+`medicago_truncatula_core_70_116_3` holds 315 distinct `PUBMED` accessions over 5,287 gene
+associations. Six of the 315 are five-digit values that PubMed has never issued in that form. Every
+one of the 315 arrives with `info_type='DIRECT'` and `info_text='LeGOO 20220727'`, so all of them
+enter through the same LeGOO literature load; the 308 well-formed ones are 7 or 8 digits.
+
+| accession | genes | what it resolves to in PubMed |
+| --- | --- | --- |
+| `00132` | 2 | nothing |
+| `00344` | 5 | nothing |
+| `00990` | 13 | nothing |
+| `01133` | 1 | nothing |
+| `01780` | 3 | nothing |
+| `17918` | 1 | **PMID 17918** --- *Science*, 8 Jul 1977, "Electrically coupled, photosensitive neurons control swimming in a jellyfish" |
+
+Five of the six carry a leading zero and so resolve nowhere: the gene page shows a reference row
+with a dead link and no title. The sixth has no leading zero, falls inside the range of PMIDs issued
+in 1977, and therefore **does** resolve --- so `MtrunA17_Chr5g0429221` (MtRH10, annotated
+"RNA helicase 10 [Source:LeGOO;Acc:MtRH10]") is currently cited to a paper on jellyfish
+neurophysiology, with that title displayed as if it were the curated reference.
+
+That asymmetry is why this is worth reporting rather than quietly filtering. A malformed identifier
+that fails loudly costs a reader one dead link. One that happens to land inside the issued PMID range
+attributes a real and unrelated paper to a gene, with nothing on the page to mark it as an error.
+
+**The obvious repair is wrong: do not strip the leading zero.** All five stripped values are live
+PMIDs, because PubMed's earliest ids are three and four digits:
+
+| stripped | resolves to |
+| --- | --- |
+| `132` | *Can Anaesth Soc J* 1975 --- cardiac output under diethyl ether anaesthesia |
+| `344` | *Intervirology* 1975 --- degradation of myxovirus virion RNA by periodate |
+| `990` | *Biochem J* 1975 --- plastid development in primary leaves of *Phaseolus vulgaris* |
+| `1133` | *Br J Pharmacol* 1975 --- antiarrhythmic effects in greyhounds |
+| `1780` | *Proc R Soc Lond B* 1975 --- pituitary cytology in the dogfish |
+
+`990` is the one to note: a 1975 plant-plastid paper is close enough to a legume gene's subject
+matter to survive a reviewer's glance, and it is still the wrong citation. Zero-stripping would turn
+five dead links into five confident mis-citations, four of them obvious and one not.
+
+**What these values probably are.** A zero-padded five-digit number is the shape of an internal
+accession rather than a PMID, and the likeliest explanation is that a LeGOO-internal reference id
+reached the PMID column for publications LeGOO holds without one. That is inference from the format
+and has not been confirmed against LeGOO's own reference table --- it is offered as a starting point,
+not as a finding.
+
+**Suggested fix.** Validate the accession before writing a `PUBMED` xref: require `^[1-9][0-9]+$`
+and reject anything with a leading zero. A reference that genuinely has no PMID should be carried
+under its own namespace, or dropped, rather than written into the PubMed field where it becomes
+indistinguishable from a real citation --- which is exactly what happened to `17918`.
+
+**Local status: not worked around.** All six are live in our index. The five unresolvable ones are
+recorded as negative cache entries in `gramene-mongodb/search/pubmed_titles.tsv` so the title
+resolver does not re-query them each run, which keeps the cells blank rather than wrong. `17918` is
+not filtered, so its jellyfish title is on the gene page.
+
 ## Items for other maintainers
 
 ### 5. 198 duplicate gene models in the lablab annotation — ILRI / LegumeInfo
@@ -286,6 +347,39 @@ file therefore produces 1,587 v5 maize genes with no pathway data. A supplementa
 the ZMY reactions exists but is not published — its download URL redirects to the Plant Reactome home
 page — so each consumer has to carry a private copy. Publishing the ZMY reactions alongside the
 others would fix this for everyone.
+
+### 9. A GeneRIF test record is published as a gene annotation — NCBI
+
+`AT1G14610` (TWN2) carries a GeneRIF whose entire text is:
+
+```
+This is a test. Please ignore this
+```
+
+keyed to PMID `100` --- *Birth Defects Orig Artic Ser* 1975, "Bovine mannosidosis--a model lysosomal
+storage disease". Neither the text nor the paper has anything to do with the gene, with
+*Arabidopsis*, or with plants.
+
+It is not an artefact of our load, and it is not stale. The row is in the **currently published**
+`generifs_basic`, checked 2026-11-02:
+
+```
+#Tax ID  Gene ID  PubMed ID (PMID) list  last update timestamp  GeneRIF text
+3702     838023   100                    2012-06-05 09:35       This is a test. Please ignore this
+```
+
+Tax 3702 is *Arabidopsis thaliana* and Gene ID 838023 is AT1G14610, so the row is correctly targeted
+and only its content is wrong. The timestamp puts it in the file since **5 June 2012** --- over
+fourteen years, through every release that has consumed GeneRIF. `generifs.js` copies `geneRIF` and
+`pubmed` from the row verbatim with no transformation, so it reaches the gene page unchanged. The
+gene's other GeneRIF, on PMID 10583378, is a normal annotation, so the test row sits beside real
+content on the same gene --- which is why no coverage or completeness check would ever flag it.
+
+**Suggested fix.** Remove the row from `generifs_basic`. Two cheap validations would also have caught
+it at submission: a PMID below roughly four digits is almost certainly not the intended citation for
+a modern functional annotation, and GeneRIF text matching `^This is a test` is not an annotation.
+
+**Local status: not worked around.** It renders on the gene page as a curated publication.
 
 ---
 
@@ -359,11 +453,86 @@ document with no `description` field at all, because a missing path yields `unde
 `undefined` and `null` as distinct types. Comparing the raw path counts every doc that lacks the
 field as having one.
 
+**Defect 8** — the malformed PubMed accessions and their shared provenance:
+
+```sql
+SELECT x.dbprimary_acc, x.info_type, x.info_text,
+       COUNT(DISTINCT g.stable_id) AS genes
+  FROM medicago_truncatula_core_70_116_3.external_db e
+  JOIN medicago_truncatula_core_70_116_3.xref x ON x.external_db_id = e.external_db_id
+  JOIN medicago_truncatula_core_70_116_3.object_xref ox ON ox.xref_id = x.xref_id
+  JOIN medicago_truncatula_core_70_116_3.gene g
+    ON g.gene_id = ox.ensembl_id AND ox.ensembl_object_type = 'Gene'
+ WHERE e.db_name = 'PUBMED'
+   AND (x.dbprimary_acc REGEXP '^0' OR CHAR_LENGTH(x.dbprimary_acc) < 6)
+ GROUP BY x.dbprimary_acc, x.info_type, x.info_text
+ ORDER BY x.dbprimary_acc;                             -- 6 rows, 25 genes, all 'LeGOO 20220727'
+```
+
+The accession-length distribution is what shows the six to be outliers rather than a namespace:
+
+```sql
+SELECT CHAR_LENGTH(x.dbprimary_acc) AS len, COUNT(*) AS distinct_accs,
+       SUM(x.dbprimary_acc REGEXP '^0') AS leading_zero
+  FROM medicago_truncatula_core_70_116_3.external_db e
+  JOIN medicago_truncatula_core_70_116_3.xref x ON x.external_db_id = e.external_db_id
+ WHERE e.db_name = 'PUBMED' GROUP BY len ORDER BY len;   -- 5:6, 6:1, 7:13, 8:295
+```
+
+**Defects 8 and 9 together** — every implausible PMID in the served index, across all 267 genomes,
+as one facet rather than a scan. 23,501 distinct PMIDs are indexed and exactly 7 fail the test:
+
+```bash
+curl -s "$SOLR_URL/genes70/select" \
+  --data 'q=*:*&rows=0&facet=true&facet.field=PUBMED__xrefs&facet.limit=-1&facet.mincount=1&wt=json' \
+ | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+     const f=JSON.parse(s).facet_counts.facet_fields["PUBMED__xrefs"];
+     console.log("distinct pmids: "+(f.length/2));
+     for(let i=0;i<f.length;i+=2)
+       if(!/^[1-9][0-9]{5,8}$/.test(f[i])) console.log("  "+f[i]+"  ("+f[i+1]+" genes)");
+   });'
+# distinct pmids: 23501
+#   00132 (2)  00344 (5)  00990 (13)  01133 (1)  01780 (3)   <- defect 8, medicago
+#   17918 (1)                                                <- defect 8, the resolving one
+#   100   (1)                                                <- defect 9, arabidopsis AT1G14610
+```
+
+Both defects are in `PUBMED__xrefs` only. PubMed ids never enter `_terms`, so neither is reachable
+from autocomplete, and neither needs a suggestions rebuild to correct.
+
+**Defect 9** — the row as upstream publishes it:
+
+```bash
+curl -s https://ftp.ncbi.nlm.nih.gov/gene/GeneRIF/generifs_basic.gz \
+  | zcat | grep -n 'This is a test'
+# 30088:3702  838023  100  2012-06-05 09:35  This is a test. Please ignore this
+```
+```bash
+redis-cli -n 3 GET AT1G14610
+# [{"pubmed":[100],"geneRIF":"This is a test. Please ignore this"}, ...]
+```
+
+That the row targets the right gene, so only its content is at fault:
+
+```bash
+curl -s 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=gene&retmode=json&id=838023'
+# name TWN2, aliases include AT1G14610, "valyl-tRNA synthetase / valine-tRNA ligase (VALRS)"
+```
+
+The description matches the gene's *other* GeneRIF (PMID 10583378, on valyl- and threonyl-tRNA
+synthetase initiation codons), so the legitimate annotation on this gene is correct and specific.
+
 ---
 
 Defects 1, 2 and 4 have been worked around in our own copies of the cores and compara; nothing
 upstream has been modified. The id mapping tables we generated for defect 1 (75,711 gene, transcript
 and translation mappings) can be supplied for a re-import.
+
+Defects 8 and 9 are **not** worked around. Both are single-digit gene counts, but they are the only
+two defects here that put an affirmatively wrong statement on a gene page rather than leave one
+blank, so they are the two most likely to be noticed by a reader and the cheapest to fix at source.
+Suppressing them locally is a one-line filter in each case and has deliberately not been applied, so
+that what the page shows still matches what the upstream data says.
 
 Defect 7 has since been worked around too, by joining the e116 cores back to the e114 ones on
 stable id --- 2,295,784 genes recovered, detailed under [Resolution](#resolution-the-e114-cores-were-the-local-source)
