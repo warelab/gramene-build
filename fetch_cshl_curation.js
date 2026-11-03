@@ -721,6 +721,18 @@ function loadSorghumLut() {
     viaV5.sort().forEach(([raw, target]) => console.error('     ' + raw + '  ->  ' + target));
   }
   console.error('');
+  // WHY THESE DO NOT RESOLVE, so the list is not re-investigated every time it is read.
+  // They are mostly not data-entry errors. Submitters transcribe ids straight out of the paper they
+  // are curating, and papers cite whatever annotation they used: the SbHyPRP family submissions came
+  // from a study that took its sorghum proteins from **Phytozome v10**, i.e. S. bicolor v2.1. Five
+  // of the unresolved SORBI_3* ids are Sobic. ids from that paper's own supplementary with the
+  // Sobic. -> SORBI_3 swap applied, and they are v2.1 gene models that did not survive into v3.1 --
+  // of the 40 Sobic. ids in that supplementary, 33 have a v3 gene and 7 do not. There is nothing to
+  // fix in the sheet and nothing this build can map them to: a v2.1 crosswalk would be a third
+  // annotation to carry, and placing them by coordinate or orthology is a weaker claim than id
+  // matching. They are reported and dropped, deliberately.
+  // The Sb##g* rejects are the same story one annotation earlier: v1 ids absent from the 22,841-row
+  // crosswalk.
   console.error('=== gene ids that could not be mapped to a gene_id ===');
   if (rejects.length) {
     rejects.sort().forEach(r => console.error('     ' + r));
