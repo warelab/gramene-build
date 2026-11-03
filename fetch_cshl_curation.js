@@ -78,7 +78,12 @@ const GO_EVIDENCE = {};
 ('EXP IDA IPI IMP IGI IEP HTP HDA HMP HGI HEP IBA IBD IKR IRD ISS ISO ISA ISM IGC RCA TAS NAS IC ND IEA')
   .split(' ').forEach(c => { GO_EVIDENCE[c] = 1; });
 
-const ONT_PREFIX = {GO: 'go', PO: 'po', TO: 'to', CHEBI: 'chebi'};
+// The ontologies this build actually hosts. ancestor_adder.js loads LUTs for GO/PO/TO only
+// (LUT_SOURCES = domains,GO,PO,TO,taxonomy), so a term from any other vocabulary has no hierarchy,
+// no name and no ancestors to hang on: it is disregarded here rather than emitted. CHEBI used to be
+// carried and fell through to a bare CHEBI__xrefs field -- an xref that looked like an annotation
+// and was not one.
+const ONT_PREFIX = {GO: 'go', PO: 'po', TO: 'to'};
 
 // --- RFC 4180 CSV, hand-rolled: the repo carries no CSV dependency. ----------------------------
 function parseCsv(text) {
@@ -120,7 +125,9 @@ function parseOntologyTerms(cell) {
     const m = /^([A-Za-z]+)[:_]\s*([0-9]+)$/.exec(t);
     if (!m) { out.push({bad: t}); return; }
     const pfx = m[1].toUpperCase();
-    if (!ONT_PREFIX[pfx]) { out.push({bad: t}); return; }
+    // Well formed, but from a vocabulary we do not host. Disregarded like a typo, but counted apart
+    // from one: nobody needs to go and correct it.
+    if (!ONT_PREFIX[pfx]) { out.push({foreign: t, prefix: pfx}); return; }
     out.push({bucket: ONT_PREFIX[pfx], id: pfx + ':' + m[2]});
   });
   return out;
@@ -337,7 +344,8 @@ function loadSorghumLut() {
   const byRawId = new Map();
   const stats = {noId: 0, trimmed: 0, excludedStatus: {}, badTerms: [], badCodes: {},
                  refKeys: 0, doiResolved: 0, pmcResolved: 0, doiUnresolved: [], noRefId: [],
-                 junkDescriptions: [], descUpgrades: 0, offlineSkipped: 0};
+                 junkDescriptions: [], descUpgrades: 0, offlineSkipped: 0,
+                 foreignTerms: [], foreignByPrefix: {}, unpairable: []};
   for (const row of data) {
     const rawId = get(row, C.ID);
     if (!rawId) { stats.noId++; continue; }
@@ -419,6 +427,39 @@ function loadSorghumLut() {
     console.error('resolved via alt_id: ' + n);
   }
 
+  // Pass D: sorghum v5 ids, which belong to SorghumBase rather than to this build. The curation
+  // form is shared between the two sites; SorghumBase hosts Sorghum bicolor v5, and the only sorghum
+  // genome here is v3 (SORBI_3*, GCA_000003195.3, taxon 4558001), so a v5 id has no gene in this
+  // collection and none of the three passes above can place it. Phytozome kept the `Sobic.`
+  // namespace across v3.1 and v5.1 with identical numbering, so the v3 counterpart of Sobic.00NGnnnnnn
+  // is SORBI_300NGnnnnnn -- a straight prefix swap.
+  //
+  // Deliberately last, and deliberately not folded into the crosswalk. This is arithmetic on an id
+  // string, not a verified correspondence: it asserts that the two annotations gave the same locus
+  // the same number, which is true of the shared namespace but is not something this build checks.
+  // So it runs only on ids the crosswalk (sorghum_v5_lut.txt, 22,841 of sorghum's 35,567 genes) and
+  // alt_id both failed to place, the SORBI_3 target must exist as a gene before it is accepted, and
+  // every id it claims is listed in the report rather than merged in silently.
+  const viaV5 = [];
+  const beforeV5 = rawIds.filter(id => !resolved.has(id));
+  if (beforeV5.length) {
+    const guesses = new Map();
+    for (const id of beforeV5) {
+      const c = cands.get(id).find(x => /^Sobic\./.test(x));
+      if (c) guesses.set(id, c.replace(/^Sobic\./, 'SORBI_3'));
+    }
+    if (guesses.size) {
+      const targets = Array.from(new Set(guesses.values()));
+      const found = new Set((await genes.find({_id: {$in: targets}}, {projection: {_id: 1}})
+                              .toArray()).map(d => d._id));
+      guesses.forEach((target, raw) => {
+        if (found.has(target)) { resolved.set(raw, target); viaV5.push([raw, target]); }
+      });
+    }
+    console.error('resolved as sorghum v5 -> v3 (Sobic. -> SORBI_3): ' + viaV5.length +
+                  ' of ' + guesses.size + ' Sobic.* ids still unplaced');
+  }
+
   await client.close();
 
   // --- pass 2b: standardize every literature reference onto a PMID ---------------------------
@@ -459,7 +500,7 @@ function loadSorghumLut() {
     if (!entries.has(geneId)) {
       entries.set(geneId, {
         locus: geneId, symbolByNorm: new Map(), nameByNorm: new Map(), refs: new Map(),
-        po: [], to: [], go: [], chebi: [], evidence: {}, status: []
+        po: [], to: [], go: [], evidence: {}, status: []
       });
     }
     const e = entries.get(geneId);
@@ -483,19 +524,66 @@ function loadSorghumLut() {
       if (nm && !junk.has(nmNorm) && !e.nameByNorm.has(nmNorm)) e.nameByNorm.set(nmNorm, nm);
       if (nmNorm) junk.add(nmNorm);
 
-      const codes = splitCodes(get(row, C.EVID)).filter(c => {
-        if (GO_EVIDENCE[c]) return true;
-        stats.badCodes[c] = (stats.badCodes[c] || 0) + 1;
-        return false;
+      // Columns H and I are parallel comma-separated lists: the curators' convention is that
+      // term[i] is supported by code[i]. Measured over all 96 rows that carry a term, exactly three
+      // shapes occur and every one is unambiguous, so nothing here has to guess:
+      //   n terms x n codes   pair positionally -- 2 rows, both written "IMP,IMP", which is only
+      //                       worth typing if correspondence is what is meant
+      //   n terms x 1 code    the single code supports every term (8 rows)
+      //   1 term  x m codes   the term has m independent lines of evidence (41 rows)
+      // No row has >1 term AND >1 code with counts that differ. If one ever appears it is reported
+      // and its codes dropped, because a cross product would invent evidence nobody asserted.
+      //
+      // Codes are validated AFTER pairing, never before. Filtering first renumbers the list --
+      // "IPP, IEP" collapses to ["IEP"] -- and a two-term row would then take IEP for its first
+      // term, silently attaching the wrong evidence to the wrong term.
+      const rawCodes = splitCodes(get(row, C.EVID));
+      const parsedTerms = parseOntologyTerms(get(row, C.ONT));
+      const goodTerms = parsedTerms.filter(t => t.bucket);
+      parsedTerms.forEach(t => {
+        if (t.bad) stats.badTerms.push(rawId + ': ' + t.bad);
+        else if (t.foreign) {
+          stats.foreignTerms.push(rawId + ': ' + t.foreign);
+          stats.foreignByPrefix[t.prefix] = (stats.foreignByPrefix[t.prefix] || 0) + 1;
+        }
       });
-      // The sheet gives no term-to-code pairing when a row has several of each, so the row's first
-      // valid code applies to that row's terms. Inventing a pairing would be worse than this.
-      const rowCode = codes[0];
 
-      parseOntologyTerms(get(row, C.ONT)).forEach(t => {
-        if (t.bad) { stats.badTerms.push(rawId + ': ' + t.bad); return; }
+      let pairs;
+      if (goodTerms.length === 0) {
+        // Check the codes anyway, so a junk evidence cell is still reported when the term it went
+        // with was the thing that got dropped.
+        rawCodes.forEach(c => {
+          if (!GO_EVIDENCE[c]) stats.badCodes[c] = (stats.badCodes[c] || 0) + 1;
+        });
+        pairs = [];
+      } else if (rawCodes.length === 0) {
+        pairs = goodTerms.map(t => [t, null]);
+      } else if (goodTerms.length === rawCodes.length) {
+        pairs = goodTerms.map((t, i) => [t, rawCodes[i]]);
+      } else if (rawCodes.length === 1) {
+        pairs = goodTerms.map(t => [t, rawCodes[0]]);
+      } else if (goodTerms.length === 1) {
+        pairs = rawCodes.map(c => [goodTerms[0], c]);
+      } else {
+        stats.unpairable.push(rawId + ': ' + goodTerms.length + ' terms vs ' + rawCodes.length +
+                              ' codes -- ' + JSON.stringify(get(row, C.ONT)) + ' / ' +
+                              JSON.stringify(get(row, C.EVID)));
+        pairs = goodTerms.map(t => [t, null]);
+      }
+
+      pairs.forEach(pair => {
+        const t = pair[0], code = pair[1];
         if (e[t.bucket].indexOf(t.id) < 0) e[t.bucket].push(t.id);
-        if (rowCode && !e.evidence[t.id]) e.evidence[t.id] = rowCode;
+        if (!code) return;
+        if (!GO_EVIDENCE[code]) { stats.badCodes[code] = (stats.badCodes[code] || 0) + 1; return; }
+        // An ARRAY per term, in the order the curator typed them. The gene doc has room for only
+        // one code per term -- ancestor_adder.js keys usefulInfo by the term's integer id and
+        // assigns evidence_code, so a second pair for the same term just overwrites the first -- so
+        // curated_source.js narrows this to the first code. Keeping the whole list here means the
+        // artifact does not quietly discard what the curator wrote, and the day the gene doc grows
+        // a second slot the data is already there.
+        const have = e.evidence[t.id] || (e.evidence[t.id] = []);
+        if (have.indexOf(code) < 0) have.push(code);
       });
 
       // Build this row's reference keys. A DOI that resolves becomes its PMID, which is what
@@ -564,7 +652,7 @@ function loadSorghumLut() {
       gene_names: names.join(', '),
       references: references,
       po: e.po.slice().sort(), to: e.to.slice().sort(),
-      go: e.go.slice().sort(), chebi: e.chebi.slice().sort(),
+      go: e.go.slice().sort(),
       evidence: e.evidence,
       status: e.status.join(', ')
     };
@@ -572,7 +660,7 @@ function loadSorghumLut() {
 
   // --- coverage report ------------------------------------------------------------------------
   const refCount = out.reduce((n, e) => n + Object.keys(e.references).length, 0);
-  const termCount = out.reduce((n, e) => n + e.po.length + e.to.length + e.go.length + e.chebi.length, 0);
+  const termCount = out.reduce((n, e) => n + e.po.length + e.to.length + e.go.length, 0);
   console.error('');
   console.error('=== coverage ===');
   console.error('  rows parsed                : ' + data.length);
@@ -616,9 +704,29 @@ function loadSorghumLut() {
     console.error('  unparseable ontology terms: ' + stats.badTerms.length);
     stats.badTerms.slice(0, 20).forEach(t => console.error('     ' + t));
   }
+  if (stats.foreignTerms.length) {
+    console.error('  terms disregarded -- not a hosted ontology (' +
+                  Object.keys(stats.foreignByPrefix).sort()
+                    .map(k => k + ' x' + stats.foreignByPrefix[k]).join(', ') +
+                  '); only GO/PO/TO have a LUT:');
+    stats.foreignTerms.forEach(t => console.error('     ' + t));
+  }
+  if (stats.unpairable.length) {
+    console.error('  rows where terms and codes could not be paired (codes dropped, NOT guessed):');
+    stats.unpairable.forEach(t => console.error('     ' + t));
+  }
+  if (viaV5.length) {
+    console.error('');
+    console.error('=== sorghum v5 -> v3 remaps (SorghumBase ids, assigned to the v3 locus) ===');
+    viaV5.sort().forEach(([raw, target]) => console.error('     ' + raw + '  ->  ' + target));
+  }
+  console.error('');
+  console.error('=== gene ids that could not be mapped to a gene_id ===');
   if (rejects.length) {
-    console.error('  unresolved gene ids:');
     rejects.sort().forEach(r => console.error('     ' + r));
+    console.error('  (' + rejects.length + ' of ' + byRawId.size + ' distinct ids)');
+  } else {
+    console.error('     none -- every distinct id in the sheet resolved');
   }
 
   process.stdout.write(JSON.stringify(out, null, 1) + '\n');
