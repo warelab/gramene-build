@@ -34,6 +34,7 @@ ST    := stages
         refresh-curated-dry refresh-curated-incremental \
         pubmed-titles-dry pubmed-titles \
         pubmed-solr-dry pubmed-solr \
+        curated-ontology-dry curated-ontology \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
         35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
@@ -253,6 +254,28 @@ pubmed-solr-dry:
 pubmed-solr:
 	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
 	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node pubmed_solr_patch.js --apply
+
+# Land curated GO/PO/TO terms AND their ancestor expansion on the live index without a decorate.
+#
+# This is the gap `refresh-curated-incremental` documents: curated_patch.js replays decorate's
+# isGramene block only, and ancestor_adder runs nine stages later, so a curated ontology term
+# written incrementally sits in gene.xrefs and never reaches gene.annotations -- reported by the
+# API, invisible to the facets. The cure used to be the 15h35m 50 -> 60 -> 65 rebuild.
+#
+# The expansion is not reimplemented: the live docs are piped through search/ancestor_adder.js
+# itself, and every gene is first replayed UNMODIFIED and compared with what is live, so a replay
+# that cannot reproduce annotations.{domains,taxonomy,familyRoot,QTL_TO} aborts before writing.
+# No _terms change, so no terms.tsv and no stage 65.
+curated-ontology-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node curated_ontology_patch.js
+
+curated-ontology:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  node curated_ontology_patch.js --apply
+	cd ../gramene-solr/genes && . ../../build/config.sh && \
+	  SOLR_ID_FILTER=/tmp/curated_ontology_ids.txt node ./mongo2solr.join.js > /tmp/curated_ontology_solr.json
+	. ./config.sh && node curated_ontology_patch_solr.js \
+	  "$$SOLR_URL/$$SOLR_GENES_CORE" /tmp/curated_ontology_solr.json --apply
 
 # refresh the curated-gene sources (the in-house curation sheet + MaizeGDB names) and push them
 # through to the served index. 50 -> 60 -> 65 only, deliberately skipping 52 and 58.
