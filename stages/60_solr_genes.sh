@@ -296,6 +296,14 @@ done
 #    homology.<set>.supertree, so counting it in mongo means a full scan of 16.1M docs (the
 #    equivalent $exists probe took over 100s per set). The invariant used instead needs no scan --
 #    a supertree implies a tree, so the count must be non-zero and must not exceed the tree count.
+#    EXPECT_SUPERTREES=0 means this release's compara HAS no supertrees, which is a fact about the
+#    database and not a build failure. Verified for grapevine v5: ensembl_compara_5_87_grape1023v2
+#    has zero gene_tree_root rows with tree_type='supertree' (only tree_type='tree' on
+#    clusterset_id='default', 34,196). Without this gate the loop below would die after the ~1h
+#    load. The assertion stays live for any release that does have them -- do not delete it.
+if [ "${EXPECT_SUPERTREES:-1}" -eq 0 ] 2>/dev/null; then
+  ok "  supertrees: none expected (EXPECT_SUPERTREES=0; this compara has no tree_type='supertree' rows)"
+else
 for set in ${sets_in_mongo}; do
   if [ "${set}" = "gene_tree" ]; then sfield="supertree_attr_s"; else sfield="${set}_supertree_attr_s"; fi
   st="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${sfield}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
@@ -311,6 +319,7 @@ for set in ${sets_in_mongo}; do
     ok "  supertrees ${set}: ${st} genes of ${tn} in the set"
   fi
 done
+fi
 # report how many genes carry each merged capability
 for cap in MAKER VEP expression_attributes; do
   n="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=capabilities:${cap}&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"

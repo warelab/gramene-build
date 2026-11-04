@@ -13,8 +13,8 @@ cd "$(dirname "$0")/.."
 . ./lib.sh
 stage_begin 25_reactome
 
-assert_mongo_min maps 100
-assert_mongo_min taxonomy 100
+assert_mongo_min maps "${MAPS_MIN}"
+assert_mongo_min taxonomy "${TAXONOMY_MIN}"
 
 R="${MONGODB_REPO}/reactome"
 cd "${R}"
@@ -172,12 +172,19 @@ log "building pathways collection + genes_to_pathways.json"
 assert_valid_json genes_to_pathways.raw.json
 assert_mongo_min pathways 100
 
-# 4) grape v4->v3 key rewrite (vitis is an anchor); fall back if it breaks json
-if "${MONGODB_REPO}/reactome/update_vv.pl" < genes_to_pathways.raw.json > genes_to_pathways.json 2>/dev/null \
+# 4) grape key DUPLICATION (not the main release's rewrite); fall back if it breaks json.
+#
+# update_vv.pl REPLACES each Vitvi key with its VIT_ equivalent. That is correct for the main
+# release, where grape genes are keyed Vitis##g##### and the rewrite is a no-op. Here it would be
+# destructive: this site has two annotated vinifera assemblies in different namespaces
+# (vitis_vinifera VIT_-keyed, vitis_viniferapn40024 Vitvi-keyed), and in live grapevine4 pathways
+# reached pn40024 on 1,113 genes and vitis_vinifera on ZERO -- so a rewrite moves the annotations
+# from one genome to the other and the site gains nothing. duplicate_vv.js emits BOTH keys instead.
+if "${NODE_BIN}" "${MONGODB_REPO}/reactome/duplicate_vv.js" < genes_to_pathways.raw.json > genes_to_pathways.json \
    && "${NODE_BIN}" -e 'JSON.parse(require("fs").readFileSync("genes_to_pathways.json"))' 2>/dev/null; then
-  ok "applied grape v4->v3 key rewrite"
+  ok "applied grape VIT_/Vitvi key duplication"
 else
-  warn "update_vv.pl produced invalid json — using raw associations"
+  warn "duplicate_vv.js produced invalid json — using raw associations"
   cp genes_to_pathways.raw.json genes_to_pathways.json
 fi
 assert_valid_json genes_to_pathways.json
@@ -191,7 +198,14 @@ assert_valid_json genes_to_pathways.json
 log "checking per-species pathway fill in genes_to_pathways.json"
 "${NODE_BIN}" --max-old-space-size=4096 -e '
   const d = require(process.argv[1]);
-  const pat = { "maize v5 (Zm00001eb)": /^Zm00001eb\d+$/, "rice (Os..g..)": /^Os\d+g\d+$/ };
+  // Grape is the species this subsite exists for, and the two namespaces are checked separately:
+  // VIT_ is vitis_vinifera (the 12X reference, which had ZERO pathway genes in v4) and Vitvi is
+  // vitis_viniferapn40024 (which had 1,113). Both must be filled after duplicate_vv.js, so this
+  // gate is what proves the duplication worked rather than just producing valid json.
+  const pat = { "grape VIT_ (vitis_vinifera)": /^VIT_\d+s\d+g\d+$/,
+                "grape Vitvi (pn40024)":       /^Vitvi\d+g\d+$/,
+                "maize v5 (Zm00001eb)":        /^Zm00001eb\d+$/,
+                "rice (Os..g..)":              /^Os\d+g\d+$/ };
   let bad = [];
   for (const [label, re] of Object.entries(pat)) {
     const keys = Object.keys(d).filter(k => re.test(k));
@@ -205,8 +219,11 @@ log "checking per-species pathway fill in genes_to_pathways.json"
   if (tx.length) { console.error("  note: " + tx.length + " rice keys are TRANSCRIPT ids (upstream shape; they cannot join genes)"); }
   if (bad.length) { console.error("EMPTY: " + bad.join("; ")); process.exit(1); }
 ' "${R}/genes_to_pathways.json" \
-  && ok "maize v5 and rice both have filled pathway entries" \
+  && ok "grape (both namespaces), maize v5 and rice all have filled pathway entries" \
   || die "a species supplement produced NO filled entries (see above).
+ grape needs reactome/duplicate_vv.js to have run over the raw associations (step 4) with
+ reactome/vv_orthologs.v3.v4.txt present -- if only ONE of the two grape namespaces is empty the
+ duplication did not fire; if BOTH are empty the VVN rows are missing from the association file.
  maize needs ${ZMY_SUPP}; rice needs ${OSA_LUT} + the OSA rows derived from UniProt2PlantReactomeReactions.txt.
  Both are appended to Ensembl2PlantReactomeReactions.txt earlier in this stage."
 

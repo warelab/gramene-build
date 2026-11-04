@@ -27,7 +27,7 @@ else
   INCREMENTAL=0
 fi
 
-assert_mongo_min taxonomy 100   # getAtlasData filters on subset:'gramene'
+assert_mongo_min taxonomy "${TAXONOMY_MIN}"   # getAtlasData filters on subset:'gramene'
 
 A="${MONGODB_REPO}/atlas"
 WORK="${A}/tmp"

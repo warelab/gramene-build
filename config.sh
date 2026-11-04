@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # --- repo layout -------------------------------------------------------------
-export RELEASE_ROOT="/usr/local/gramene/release70"
+export RELEASE_ROOT="/usr/local/gramene/subsites/grapevine/v5"
 export BUILD_DIR="${RELEASE_ROOT}/build"
 export MONGODB_REPO="${RELEASE_ROOT}/gramene-mongodb"
 export MONGOCONFIG_REPO="${RELEASE_ROOT}/gramene-mongodb-config"
@@ -40,21 +40,24 @@ export DB_VERSION="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.st
 export MONGO_DB="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).db))')"   # search70
 export MONGO_URI="mongodb://${MONGO_HOST}:${MONGO_PORT}"
 
-# --- solr cores: MAIN release uses bare genes<N>/suggestions<N> (no species prefix) ---
-export SPECIES="gramene"                                       # for log messages only
-export PREV_DB="search$((DB_VERSION-1))"                       # search69
-export SOLR_GENES_CORE="genes${DB_VERSION}"                    # genes70
-export SOLR_SUGG_CORE="suggestions${DB_VERSION}"              # suggestions70
-export PREV_GENES_CORE="genes$((DB_VERSION-1))"               # genes69 (conf template + diffs)
-export PREV_SUGG_CORE="suggestions$((DB_VERSION-1))"
-# The core the LIVE r69 site serves, and so the source of saved_search tags for
-# `make restore-saved-search`. NB this is a core NAME, not a directory: the core named
-# genes69 has instanceDir /solr/data/genes69c, while the directory literally called
-# genes69 is a disposable copy. Always address it by name.
-export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-genes69}"
+# --- solr cores: a SUBSITE prefixes its cores with $SPECIES (grapevine_genes5) ---
+export SPECIES="grapevine"
+export PREV_DB="${SPECIES}$((DB_VERSION-1))"                   # grapevine4
+export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"         # grapevine_genes5
+export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"    # grapevine_suggestions5
+export PREV_GENES_CORE="${SPECIES}_genes$((DB_VERSION-1))"     # grapevine_genes4 (conf template + diffs)
+export PREV_SUGG_CORE="${SPECIES}_suggestions$((DB_VERSION-1))"
+# The core the LIVE v4 site serves, and so the source of saved_search tags for
+# `make restore-saved-search`. NB this is a core NAME, not a directory: on this host core
+# names are shifted off their instanceDirs -- grapevine_suggestions3 lives in
+# /solr/data/grapevine_suggestions3.1. Always address it by name, never by path.
+# (grapevine_genes4 carries 0 saved_search docs, so restore-saved-search is a no-op here.)
+export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-${SPECIES}_genes$((DB_VERSION-1))}"
 
-# --- solr gene attribute tables -- main release has NO sorghum MAKER/VEP; leave empty
-# (stage 60 warns + skips a missing table). grassius_homolog still projects fresh.
+# --- solr gene attribute tables -- MAKER/VEP are SorghumBase-only; leave empty
+# (stage 60 warns + skips a missing table). grassius_homolog still projects fresh: this
+# site's compara includes maize, sorghum and rice, so grape genes can legitimately acquire
+# TF families through the trees. Report that count, do not assert it.
 export MAKER_TABLE="${MAKER_TABLE:-}"
 export VEP_TABLE="${VEP_TABLE:-}"
 
@@ -65,14 +68,33 @@ export VEP_TABLE="${VEP_TABLE:-}"
 # listed fails the stage. Empty is the correct value for a healthy release.
 export STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-}"
 
+# --- node heaps ---------------------------------------------------------------
+# The stage defaults (atlas 48G, decorate 24G, solr 16G) are sized for the 267-genome main
+# release. This site is 1.37M genes against 16.1M -- about 1/12 -- and squam runs ~53 other
+# services plus mongod and solr, so take proportionate heaps and leave the box headroom.
+export ATLAS_HEAP="${ATLAS_HEAP:---max-old-space-size=16384}"
+export DECORATE_HEAP="${DECORATE_HEAP:---max-old-space-size=12288}"
+export SOLR_HEAP="${SOLR_HEAP:---max-old-space-size=8192}"
+
 # --- services ----------------------------------------------------------------
 export SOLR_URL="${SOLR_URL:-http://localhost:8983/solr}"
 export SOLR_DATA_DIR="${SOLR_DATA_DIR:-/solr/data}"
-# Measured against search70.maps' 267 genomes: localhost:3000 resolves 17, the SorghumBase
-# pan-site panel (pansite-ensembl-115) resolves 18, and the public plants REST resolves
-# ALL 267. v11 moved to the pan-site because that IS its gene set; for the main release it
-# would leave ~250 genomes unverified, which is what 10_maps.log already shows.
-export ENSEMBL_REST="${ENSEMBL_REST:-https://rest.ensembl.org}"
+# Serving tier. Grapevine uses a 40000+/41000+ port convention, NOT the 10000+/11000+ one
+# 70_services.sh defaults to -- v4 runs on 40004/41004. Both 40005 and 41005 are free.
+# The gorgonzola proxy for /grapevine_v5 -> squam:40005 and the ebeye route -> squam:41005
+# are already open (they return 503 until these backends come up), so starting these
+# services PUBLISHES the site: verify against local solr/mongo before 70_services.
+export SWAGGER_PORT="${SWAGGER_PORT:-40005}"
+export EBEYE_PORT="${EBEYE_PORT:-41005}"
+export BASEPATH="${BASEPATH:-/${SPECIES}_v${DB_VERSION}}"          # /grapevine_v5
+# NB data.grapevine.org does not exist; the subsite is served under data.gramene.org.
+export SWAGGER_URL_PUBLIC="${SWAGGER_URL_PUBLIC:-https://data.gramene.org${BASEPATH}/swagger}"
+# Used ONLY by the 10_maps assembly QC, which warns and never fails. The public plants REST
+# does not carry the 36 Vitis cultivar assemblies, so the local registry
+# (/usr/local/ensembl-87/ensembl-rest/reg.pm, which serves 91 species across every subsite
+# and is what the live v4 site uses) is the right target here. UNVERIFIED for these 39
+# genomes: read the coverage warning 10_maps prints and re-point this if it is poor.
+export ENSEMBL_REST="${ENSEMBL_REST:-http://localhost:3000}"
 export REDIS_HOST="${REDIS_HOST:-localhost}"
 export REDIS_PORT="${REDIS_PORT:-6379}"
 export REDIS_HOMOLOG_DB=9
@@ -87,19 +109,32 @@ if [ -f "${ENSEMBL_DB_INFO}" ]; then
   export MYSQL_PASS="$("${NODE_BIN}" -e 'console.log(require("'"${ENSEMBL_DB_INFO}"'").compara.password||"")')"
 fi
 
-# --- preflight invariants (release70 on colden, discovered) ------------------
-export EXPECT_CORES=267        # 266 *_core_70_116_* on colden + 1 borrowed prev-release core:
-                              # lathyrus_sativus_core_69_114_1 (its _70_116 core is an empty shell,
-                              # but lathyrus IS in compara_plants_70_116; the 69 core has the SAME
-                              # assembly JIC_Lsat_v2.1.1 / 2024-04 geneset, 31719 genes, and 100% of
-                              # compara70's lathyrus stable_ids resolve against it — so homologs/trees
-                              # resolve with no dangling refs. Drop to 266 + remove the json entry once
-                              # lathyrus_sativus_core_70_116_1 is loaded on colden.
-export EXPECT_ANCHORS=0        # main release: no pan-genome anchors
-# get_ensembl_db_info.js discovers cores only, so the 24 *_variation_70_116_* dbs on colden
-# were added to ensembl_db_info.json's "variations" array by hand (matched by the _variation_70_116_
-# name pattern). Only 2 carry QTLs (oryza_sativa ~8.3k, sorghum_bicolor ~5.8k) which stage
-# 20_variation loads into the qtls collection; the rest are present for VEP (still disabled).
-export EXPECT_VARIATIONS=24
+# --- preflight invariants (grapevine v5 on cabot) ----------------------------
+# v5 reuses the LIVE v4 source set verbatim, so gene models and gene trees are unchanged.
+# All 42 dbs verified present on cabot. ensembl_db_info.json is copied from v4 and FROZEN:
+# never run get_ensembl_db_info.js here, or a different genome set builds silently.
+export EXPECT_CORES=39         # 39 *_core_*_87_* : 36 Vitis assemblies + arabidopsis, chlamydomonas,
+                               # drosophila, oryza, selaginella, solanum, sorghum, zea_maysb73 outgroups.
+                               # The v4_108 staging dir lists a DIFFERENT 27-core _108_ set against a
+                               # different compara; it is deliberately not used.
+export EXPECT_ANCHORS=0        # v4 has no `anchor` keys and maps.is_anchor is 0/39. Kept at 0:
+                               # release70's reactome/get_species_prefixes.js is zero-anchor safe
+                               # (it queries {type:'genome'} and falls back to taxon_id/1000), and
+                               # grape pathway coverage is fixed in 25_reactome instead -- see
+                               # reactome/duplicate_vv.js. Anchors would be a site-semantics change
+                               # with no bearing on coverage.
+export EXPECT_VARIATIONS=2     # oryza_sativa_variation_7_87_7, sorghum_bicolor_variation_6_87_30.
+                               # Vitis has NO variation db, yet 20_variation still matters: these two
+                               # produce the 55,440 QTL_TO genes, joined positionally not by id.
+
+# --- subsite scale knobs ------------------------------------------------------
+# Several stages hardcode floors written for a ~125-core release. Grapevine has 39 genomes,
+# so those gates fail on a CORRECT build. Parameterised here rather than edited per stage.
+export MAPS_MIN="${MAPS_MIN:-35}"            # 39 genomes; cores with 0 genes/no taxon are skipped
+export TAXONOMY_MIN="${TAXONOMY_MIN:-100}"   # v4 produced 147, so 100 holds
+# This compara has gene_tree_root tree_type='tree' ONLY for clusterset_id='default' (34,196,
+# matching grapevine4.genetree exactly) and ZERO tree_type='supertree' rows. So there are no
+# cultivar supertrees and stage 60's supertree assertion must not fire.
+export EXPECT_SUPERTREES="${EXPECT_SUPERTREES:-0}"
 
 export MONGOSH="$(command -v mongosh || command -v mongo)"
