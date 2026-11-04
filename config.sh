@@ -136,5 +136,11 @@ export TAXONOMY_MIN="${TAXONOMY_MIN:-100}"   # v4 produced 147, so 100 holds
 # matching grapevine4.genetree exactly) and ZERO tree_type='supertree' rows. So there are no
 # cultivar supertrees and stage 60's supertree assertion must not fire.
 export EXPECT_SUPERTREES="${EXPECT_SUPERTREES:-0}"
+# trees/verify_tree_shape.js --deep-report asserts that SOME tree exceeds 112 levels, because
+# release 70 had 147 such trees and once lost them silently. That is a property of a 267-genome
+# compara, not of the storage model: this site has 39 genomes, 21 of them one species, and its
+# deepest tree is far short of the limit. 0 = report instead of assert. The assertion stays live
+# wherever the expectation holds.
+export EXPECT_DEEP_TREES="${EXPECT_DEEP_TREES:-0}"
 
 export MONGOSH="$(command -v mongosh || command -v mongo)"
