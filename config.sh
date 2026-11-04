@@ -89,6 +89,17 @@ export EBEYE_PORT="${EBEYE_PORT:-41005}"
 export BASEPATH="${BASEPATH:-/${SPECIES}_v${DB_VERSION}}"          # /grapevine_v5
 # NB data.grapevine.org does not exist; the subsite is served under data.gramene.org.
 export SWAGGER_URL_PUBLIC="${SWAGGER_URL_PUBLIC:-https://data.gramene.org${BASEPATH}/swagger}"
+# The swagger merged from release70 carries the primer-design and genotyping subsystems. Both
+# default to enabled and derive their site_key from swagger.yaml's basePath, so without this they
+# would advertise endpoints on /grapevine_v5 that have no site configuration behind them.
+# Disabled here deliberately, NOT because the data is missing -- it mostly is not:
+#   /scratch/olson/fasta/vitis_* holds complete BLAST databases for the Vitis genomes, including
+#   dna.toplevel, i.e. the same set sorghum has, and primer3_core/blastn/makeblastdb are installed.
+# What is missing is the per-site configuration (site_key -> genome list -> assembly paths), which
+# is its own piece of work rather than a by-product of this build. Genotyping is separately
+# impossible here: config.js's variation map is {sorghum_bicolor} only and Vitis has no Ensembl
+# variation database at all. So primer DESIGN for grapevine is a credible follow-up; genotyping is not.
+export PRIMERS_ENABLED="${PRIMERS_ENABLED:-false}"
 # Used ONLY by the 10_maps assembly QC, which warns and never fails. The public plants REST
 # does not carry the 36 Vitis cultivar assemblies, so the local registry
 # (/usr/local/ensembl-87/ensembl-rest/reg.pm, which serves 91 species across every subsite
