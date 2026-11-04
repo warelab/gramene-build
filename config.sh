@@ -138,9 +138,11 @@ export TAXONOMY_MIN="${TAXONOMY_MIN:-100}"   # v4 produced 147, so 100 holds
 export EXPECT_SUPERTREES="${EXPECT_SUPERTREES:-0}"
 # trees/verify_tree_shape.js --deep-report asserts that SOME tree exceeds 112 levels, because
 # release 70 had 147 such trees and once lost them silently. That is a property of a 267-genome
-# compara, not of the storage model: this site has 39 genomes, 21 of them one species, and its
-# deepest tree is far short of the limit. 0 = report instead of assert. The assertion stays live
-# wherever the expectation holds.
+# compara, not of the storage model. Measured on this build's 34,196 trees: deepest max_depth=69,
+# 2 trees over 50, NONE over 80, and max_depth is set on all 34,196 -- which rules out both
+# failures the assertion guards (deep trees dropped, or max_depth never written). search70 for
+# contrast has 164 trees over 112 of 386,398, so the assertion is correct there and stays live
+# wherever the expectation holds. 0 = report instead of assert.
 export EXPECT_DEEP_TREES="${EXPECT_DEEP_TREES:-0}"
 
 export MONGOSH="$(command -v mongosh || command -v mongo)"
