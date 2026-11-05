@@ -88,6 +88,25 @@ grep -q "const DEFAULT_PORT = ${EBEYE_PORT};" "${EA}" && grep -q "defaultServer:
   && ok "ebeye app.js DEFAULT_PORT=${EBEYE_PORT}, defaultServer=${SWAGGER_URL_PUBLIC}" \
   || die "could not set the ebeye port/defaultServer in ${EA} — check it by hand"
 
+# ---- primers subsystem ----
+# config/default.yaml is the only place `primers.enabled` can be set persistently: the DEFAULTS
+# in api/helpers/primers/config.js hardcode `enabled: true`, and that file is deep-frozen, so a
+# site that cannot serve primers must say so here. This site needs it off unless its genomes are
+# configured in the primers config (site_key -> genome list -> assembly/BLAST paths); the helper
+# also expects primer3_core/ntthal/blastn to exist. Derived from config.sh, not hand-edited, so
+# it cannot drift the way the old uncommitted serving-tier edits did.
+PCFG="${SWAGGER_REPO}/config/default.yaml"
+if [ -f "${PCFG}" ] && grep -qE '^primers:' "${PCFG}"; then
+  # only the `enabled:` directly inside the primers block -- NOT repeat_mask.enabled or
+  # variation.enabled, which are nested two spaces deeper and must keep their own values.
+  perl -0pi -e "s{(^primers:\n(?:[^\S\n][^\n]*\n)*?[ ]{2}enabled:[ ]*)(?:true|false)}{\${1}${PRIMERS_ENABLED}}m" "${PCFG}"
+  grep -qE "^[ ]{2}enabled:[ ]*${PRIMERS_ENABLED}\b" "${PCFG}" \
+    && ok "swagger primers.enabled -> ${PRIMERS_ENABLED}" \
+    || die "could not set primers.enabled in ${PCFG} — check it by hand"
+else
+  log "  no primers block in ${PCFG} — nothing to set"
+fi
+
 # ---- optionally (re)start under pm2 ----
 if [ "${START_SERVICES:-0}" = "1" ] && command -v pm2 >/dev/null; then
   SWAGGER_NAME="${SPECIES}_swagger${DB_VERSION}"
@@ -167,15 +186,20 @@ cat >&2 <<EOF
 ──────────────────────────────────────────────────────────────────────────────
  MANUAL DEPLOYMENT CHECKLIST (infra steps the build cannot safely automate)
 ──────────────────────────────────────────────────────────────────────────────
- 1. Apache reverse proxy (gorgonzola: conf/extra/httpd-ssl.conf, under
-    data.${SPECIES}.org):  ${BASEPATH} -> $(hostname):${SWAGGER_PORT}
+ 1. Apache reverse proxy (gorgonzola: conf/extra/httpd-ssl.conf, under the
+    PUBLIC host of ${SWAGGER_URL_PUBLIC} -- NOT data.${SPECIES}.org, which for a
+    subsite does not exist):  ${BASEPATH} -> $(hostname):${SWAGGER_PORT}
     then: apachectl configtest && apachectl graceful
  2. Open firewall to ${SWAGGER_PORT} (swagger) and ${EBEYE_PORT} (ebeye).
- 3. Ensembl REST (${ENSEMBL_REST}): add this release's ${EXPECT_CORES} cores + compara
-    to the registry (reg.pm) and restart so the genome browser + maps QC resolve
-    every genome (preflight/maps flagged genomes missing from the registry).
- 4. BLAST: re-run ensure_blast.pl with the updated registry --out_dir the blast
-    BLAST_DB_ROOT, then restart the gramene-blast api under pm2.
+ 3. Ensembl REST (${ENSEMBL_REST}) and 4. BLAST: needed only if this release
+    CHANGED its Ensembl cores/compara. A rebuild that reuses the previous
+    release's ensembl_db_info.json (same ${EXPECT_CORES} cores, same compara --
+    diff it to be sure) needs NEITHER: the registry already resolves these
+    genomes and the BLAST databases already exist.
+      reg.pm serves ~91 species across EVERY subsite, so editing it to add
+      cores that are already there risks breaking unrelated sites. Check first:
+      diff this release's gramene-mongodb/ensembl_db_info.json against the
+      previous release's, and only touch the registry if the core list differs.
  5. gene-tree curation UI (gramene-genetree-vis): point defaultServerSb at
     ${SWAGGER_URL_PUBLIC}  (browser-facing, so the public proxied URL).
 ──────────────────────────────────────────────────────────────────────────────
