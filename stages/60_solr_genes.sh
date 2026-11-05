@@ -358,8 +358,16 @@ else
   log "  ${nmiss} experiment(s) absent from the core — checking whether any gene actually passes the evidence bar for them"
   bad=""
   for acc in ${missing}; do
-    # the same rule mongo2solr.join.js applies: a sample >= 0.5 TPM, or p < 0.05 with |l2fc| >= 1
-    has="$(mongo_eval "db.expression.countDocuments({\$or:[{'${acc}':{\$elemMatch:{value:{\$gte:0.5}}}},{'${acc}':{\$elemMatch:{p_value:{\$lt:0.05}}}}]},{limit:1})" | tr -d '\r')"
+    # The same rule mongo2solr.join.js applies, and it must match it EXACTLY or this gate fails
+    # correct builds. The differential arm needs BOTH p < 0.05 and |l2fc| >= 1 in the SAME sample
+    # (the mapper reads Math.abs(sample.l2fc ?? 0) >= 1.0, so a missing l2fc fails), hence the
+    # $elemMatch with the l2fc $or nested inside it. Dropping the l2fc half flagged 7 studies
+    # that have a significant p-value but no fold change large enough -- they are correctly
+    # absent from the core, and the gate failed a good build on them.
+    has="$(mongo_eval "db.expression.countDocuments({\$or:[
+             {'${acc}':{\$elemMatch:{value:{\$gte:0.5}}}},
+             {'${acc}':{\$elemMatch:{p_value:{\$lt:0.05},\$or:[{l2fc:{\$gte:1}},{l2fc:{\$lte:-1}}]}}}
+           ]},{limit:1})" | tr -d '\r')"
     if [ "${has:-0}" -gt 0 ]; then
       bad="${bad} ${acc}"
     else
