@@ -34,6 +34,32 @@ WORK="${A}/tmp"
 mkdir -p "${WORK}"
 cd "${WORK}"
 GXA=https://ftp.ebi.ac.uk/pub/databases/microarray/data/atlas/experiments
+GXA_FTP=ftp://ftp.ebi.ac.uk/pub/databases/microarray/data/atlas/experiments
+
+# https://ftp.ebi.ac.uk/ intermittently refuses or hangs while plain ftp:// to the SAME host
+# answers and https://www.ebi.ac.uk/ is fine -- the ftp host's TLS listener, not our network.
+# 15_ontologies carries the same fallback for InterPro, for the same reason.
+#
+# Without it this stage half-loads SILENTLY, which is worse than failing: the experiment and
+# assay metadata comes from www.ebi.ac.uk and lands fine, while every per-experiment TSV fails,
+# so experiments exist with no gene data at all and the gates below (experiments >= 1,
+# expression >= 1000) still pass because the OTHER experiments carry them. That happened on
+# 2026-11-04: 119 failed fetches, 50 of 381 experiments loaded with zero expression values, and
+# the stage reported success. E-CURD-47 went from 132,359 samples >= 0.5 TPM in v4 to nothing.
+# The assert_experiments_carried gate at the end of this stage is what catches it.
+# Downloads to "$2.part" and renames only on success: curl -o truncates its target before it
+# knows the transfer failed, which would destroy a good copy from an earlier run.
+fetch_gxa() {   # $1 = path under the experiments dir, $2 = output file
+  if curl -fsSL --max-time 900 "${GXA}/$1" -o "$2.part"; then
+    mv "$2.part" "$2"; return 0
+  fi
+  warn "  $1: https failed, trying ftp"
+  if curl -fsS --max-time 900 "${GXA_FTP}/$1" -o "$2.part"; then
+    mv "$2.part" "$2"; return 0
+  fi
+  rm -f "$2.part"
+  return 1
+}
 
 # Clean slate for a FULL rebuild. The loaders are upsert-based now, so this is no longer required
 # for correctness -- it just guarantees no stale experiment survives a full run.
@@ -50,14 +76,20 @@ log "building descendant->genome taxon remap from ${COMPARA_DB}"
 "${NODE_BIN}" "${A}/build_taxon_remap.js" || warn "taxon remap build failed (non-fatal; getAtlasData uses static map)"
 
 log "downloading assaygroup + contrast detail tables"
-curl -fsSL "${GXA}/assaygroupsdetails.tsv" -o assaygroupsdetails.tsv
-curl -fsSL "${GXA}/contrastdetails.tsv"    -o contrastdetails.tsv
+fetch_gxa assaygroupsdetails.tsv assaygroupsdetails.tsv \
+  || die "could not fetch assaygroupsdetails.tsv over https or ftp -- check both
+ https://ftp.ebi.ac.uk/ and ftp://ftp.ebi.ac.uk/ by hand before re-running."
+fetch_gxa contrastdetails.tsv contrastdetails.tsv \
+  || die "could not fetch contrastdetails.tsv over https or ftp."
 assert_nonempty_file assaygroupsdetails.tsv
 
 # getAtlasData emits curl commands for the per-experiment files AND inserts
 # experiments+assays metadata. We rewrite each "curl -O URL" so already-downloaded
 # non-empty files are skipped (resumable), then run them.
-skip_existing='s#^curl -O (.*/([^/]+))$#[ -s "\2" ] || curl -fsS -O "\1"#'
+# Rewrite each emitted "curl -O <url>" so an already-downloaded non-empty file is skipped
+# (resumable) and so a failed https attempt falls back to ftp on the same path, per fetch_gxa
+# above. These run under `| bash`, which does not inherit shell functions, hence the inline form.
+skip_existing='s#^curl -O https://ftp\.ebi\.ac\.uk(/[^ ]*/([^/]+))$#[ -s "\2" ] || curl -fsS -O "https://ftp.ebi.ac.uk\1" || curl -fsS -O "ftp://ftp.ebi.ac.uk\1"#'
 ONLY_ENV=""
 [ "${INCREMENTAL}" = "1" ] && ONLY_ENV="$(echo "${ADD_LIST}" | tr ' ' ',')"
 log "fetching baseline experiment data + loading experiments/assays metadata"
@@ -133,6 +165,38 @@ fi
 assert_mongo_min experiments 1
 assert_mongo_min expression 1000
 
+# Every experiment record must be carried by at least one gene. Doc counts cannot see this:
+# a study mostly WIDENS existing gene documents rather than creating new ones, so a study whose
+# TSV never downloaded leaves a complete-looking experiments/assays entry and adds nothing to
+# `expression`, while the collection total stays well above any threshold. This is the gate that
+# catches a transport failure (see the fetch_gxa comment at the top of this stage); without it
+# the only symptom is an empty expression widget, and the API 500s on it.
+# Fatal on a full build. Incremental adds assert per-accession below, so here it only warns --
+# an older study that was already empty before this run is not this run's fault.
+assert_experiments_carried() {
+  local out
+  out="$(mongo_eval '
+    const exps = db.experiments.find({}, {_id:1}).toArray().map(e => e._id);
+    const bad = exps.filter(id => db.expression.countDocuments({[id]: {$exists: true}}, {limit:1}) === 0);
+    print(bad.length + "|" + bad.join(","));
+  ' | tr -d "\r")"
+  local n="${out%%|*}" list="${out#*|}"
+  if [ "${n:-0}" -eq 0 ]; then
+    ok "all experiments carry gene data"
+    return 0
+  fi
+  warn "${n} experiment(s) have NO gene expression data: ${list}"
+  warn "  almost always a failed per-experiment TSV download. Re-fetch just those with:"
+  warn "    make 55_atlas ATLAS_ADD=\"$(echo "${list}" | cut -d, -f1-5)...\""
+  return 1
+}
+if [ "${INCREMENTAL}" = "0" ]; then
+  assert_experiments_carried || die "atlas load is incomplete -- see the warnings above. The TSVs
+ live in ${WORK}; a missing one re-downloads on re-run, an empty one must be deleted first."
+else
+  assert_experiments_carried || true
+fi
+
 # Incremental post-condition: every requested accession must now be present. The doc COUNT of
 # `expression` is a poor signal here -- adding a study mostly widens existing gene documents rather
 # than creating new ones -- so assert on the experiment records themselves.
@@ -141,7 +205,14 @@ if [ "${INCREMENTAL}" = "1" ]; then
     n="$(mongo_eval "db.experiments.countDocuments({_id:'${acc}'})")"
     [ "${n:-0}" -ge 1 ] || die "incremental add did not land ${acc} in experiments — it may not be an RNA-Seq experiment for a hosted genome"
     tx="$(mongo_eval "db.experiments.findOne({_id:'${acc}'}).taxon_id")"
-    ok "added ${acc} (taxon ${tx})"
+    # ... and it must actually carry gene data. The experiment record alone lands even when the
+    # per-experiment TSV never downloaded, which is exactly how 50 empty studies got here.
+    g="$(mongo_eval "db.expression.countDocuments({'${acc}':{\$exists:true}})")"
+    [ "${g:-0}" -ge 1 ] || die "incremental add landed the ${acc} experiment record but NO gene
+ data -- its TSV almost certainly failed to download. Check ${WORK}/${acc}-*.tsv exists and is
+ non-empty (delete a zero-length one so it re-downloads), and that both https://ftp.ebi.ac.uk/
+ and ftp://ftp.ebi.ac.uk/ are reachable."
+    ok "added ${acc} (taxon ${tx}, ${g} genes)"
     ledger_add atlas_studies "${acc}" "${tx}"
   done
 fi
