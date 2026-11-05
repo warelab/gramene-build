@@ -113,6 +113,42 @@ ntsv="${#TSV_LIST[@]}"
 log "expression TSV files to load: ${ntsv}"
 [ "${ntsv}" -gt 0 ] || { warn "no expression TSVs downloaded (no Atlas experiments for these species?) — skipping expression load"; stage_end; exit 0; }
 
+# Report baseline assay groups whose TPM column is entirely zero. A TPM column sums to ~1e6 by
+# construction, so an all-zero one is not a low-expression sample -- it is a group the upstream
+# file carries no data for, and it renders in the expression widget as a real measurement of
+# zero. Faithfully loaded either way; this exists so such a column is known from the build log
+# rather than discovered through the UI.
+#
+# Reported, never fatal: the data is upstream's and correct for us to carry. E-CURD-1 g13
+# (E-GEOD-49090, flower) is the one in grapevine v5 -- the only all-zero column in 1,896 baseline
+# assay groups across 97 studies. Its sibling E-CURD-1 g19 is NOT caught here and should not be:
+# that column sums to 1,000,001 and is a genuine library that happens to be 84% chloroplast, so
+# every nuclear gene rounds to zero. Few expressed genes is a judgement call about the biology;
+# a zero column is arithmetically impossible, which is why only the latter is checked.
+#
+# Tests the raw cell text rather than parsing quantiles, and stops testing a column once any
+# non-zero cell is seen -- 11s over 980 MB, against 95s for a parse-every-field version.
+shopt -s nullglob; TPMS_LIST=( ); for f in "${TSV_LIST[@]}"; do case "${f}" in *-tpms.tsv) TPMS_LIST+=("${f}");; esac; done; shopt -u nullglob
+if [ "${#TPMS_LIST[@]}" -gt 0 ]; then
+  log "checking baseline TPM columns for all-zero assay groups (${#TPMS_LIST[@]} files)"
+  zero_cols="$(awk -F'\t' '
+    FNR==1 { acc=FILENAME; sub(/-tpms\.tsv$/,"",acc); ncol=NF
+             for(i=3;i<=NF;i++){ name[i]=$i; live[i]=0 }
+             next }
+    { for(i=3;i<=ncol;i++) if(!live[i] && $i !~ /^0(\.0+)?(,0(\.0+)?)*$/) live[i]=1 }
+    ENDFILE { for(i=3;i<=ncol;i++) if(!live[i]) printf "%s %s\n", acc, name[i] }
+  ' "${TPMS_LIST[@]}")"
+  if [ -z "${zero_cols}" ]; then
+    ok "no all-zero TPM columns"
+  else
+    warn "$(echo "${zero_cols}" | grep -c .) baseline assay group(s) have an all-zero TPM column"
+    warn "  upstream carries no data for these; they will show as a zero column in the widget:"
+    echo "${zero_cols}" | while read -r acc grp; do
+      [ -n "${acc}" ] && warn "    ${acc} ${grp}"
+    done
+  fi
+fi
+
 # load expression data. parseData.js holds all experiments' expression in memory
 # before insertMany, so it needs a big heap (8G OOMs on the full sorghum set).
 ATLAS_HEAP="${ATLAS_HEAP:---max-old-space-size=49152}"
