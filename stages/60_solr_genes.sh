@@ -47,7 +47,25 @@ fi
 # reuse it instead of re-running the ~20min conversion.
 SOLR_HEAP="${SOLR_HEAP:---max-old-space-size=16384}"
 want_lines=$(( $(mongo_count genes) * 2 + 1 ))
-if [ -s solr_genes.json ] && tail -c 3 solr_genes.json | grep -q ']' \
+# ... but "complete" is NOT "current". The closing ']' and the line count only say the file
+# describes ${want_lines}/2 genes; they say nothing about WHICH values those genes carry, and the
+# line count cannot move when a refresh changes fields rather than documents. A curated refresh
+# (names, synonyms, literature, xrefs) is exactly that shape, so this check happily reused a
+# seven-week-old dump and loaded a core with none of the new annotation in it -- twice before,
+# once here. Reuse only when every input that feeds the dump is OLDER than it.
+genes_stale=0
+for dep in "${BUILD_DIR}/.state/50_genes_decorate.done" \
+           "${BUILD_DIR}/.state/52_tree_domains.done" \
+           "${BUILD_DIR}/.state/55_atlas.done" \
+           "${BUILD_DIR}/.state/56_project_maize_v4v5.done" \
+           "${BUILD_DIR}/.state/57_jgi_expression.done" \
+           ./mongo2solr.join.js; do
+  if [ -e "${dep}" ] && [ -e solr_genes.json ] && [ "${dep}" -nt solr_genes.json ]; then
+    log "input newer than solr_genes.json: $(basename "${dep}") — will regenerate"
+    genes_stale=1
+  fi
+done
+if [ "${genes_stale}" -eq 0 ] && [ -s solr_genes.json ] && tail -c 3 solr_genes.json | grep -q ']' \
    && [ "$(wc -l < solr_genes.json)" = "${want_lines}" ]; then
   log "reusing existing complete solr_genes.json ($(wc -c <solr_genes.json) bytes, ${want_lines} lines)"
 else
@@ -132,4 +150,18 @@ for cap in MAKER VEP expression_attributes; do
 done
 ghn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=grassius_homolog__attr_ss:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
 log "  genes with grassius_homolog: ${ghn:-0}"
+
+# User gene-list tags are written to the core by the API AFTER load, and live nowhere else -- the
+# genelists collection stores a hash and n_genes, NOT the gene ids. So a full reindex silently drops
+# every saved list, and the only recovery source is another core that still carries the tags. This
+# has already cost 7 lists that existed only in this core. Warn loudly; re-applying is additive and
+# idempotent, so it is always safe to run.
+ssn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=saved_search:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
+prev="$(curl -s "${SOLR_URL}/${PREV_LIVE_GENES_CORE}/select?q=saved_search:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
+log "  genes with saved_search (user gene lists): ${ssn:-0}  (${PREV_LIVE_GENES_CORE}: ${prev:-0})"
+if [ "${ssn:-0}" -lt "$(( ${prev:-0} / 2 ))" ]; then
+  warn "user gene-list tags look DROPPED (${ssn:-0} here vs ${prev:-0} in ${PREV_LIVE_GENES_CORE})."
+  warn "  restore them with:  make restore-saved-search        (add DRY=1 to preview)"
+  warn "  gene membership exists ONLY in a Solr core -- a list tagged only here is unrecoverable."
+fi
 stage_end
