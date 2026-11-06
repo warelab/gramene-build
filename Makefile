@@ -33,7 +33,7 @@ ST    := stages
         refresh-grassius refresh-attributes \
         refresh-attr refresh-maker refresh-vep refresh-rsid refresh-rsid-suggestions refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
-        35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
+        35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas 57_jgi_expression \
         56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services
 
 28_grassius_source:
@@ -61,7 +61,19 @@ refresh-attr:
 	bash $(ST)/62_attr_atomic.sh $(ATTR)
 refresh-maker:            ; bash $(ST)/62_attr_atomic.sh maker
 refresh-vep:              ; bash $(ST)/62_attr_atomic.sh vep
+# Re-apply user gene-list saved_search tags after a FULL reindex of the genes core. They are
+# written post-load by the API, so a core rebuild drops them; additive + idempotent, safe to re-run.
+restore-saved-search:
+	@. ./config.sh; cd ../gramene-solr && \
+	  MONGO_URL="$${SAVED_SEARCH_MONGO_URL:-mongodb://localhost:27017/userData1,mongodb://localhost:27017/sorghum10,mongodb://localhost:27017/sorghum10b}" \
+	  SOURCE="$${SOLR_URL}/$${PREV_LIVE_GENES_CORE}" TARGET="$${SOLR_URL}/$${SOLR_GENES_CORE}" \
+	  node scripts/sync_saved_search.js $(if $(DRY),--dry-run,)
+
 refresh-rsid:             ; bash $(ST)/62_attr_atomic.sh rsid
+# Rebuild ONLY the "Variants: rsID" suggestion layer (~10M docs), in place. Deliberately NOT part
+# of `make refresh-rsid`: that patches the genes core in minutes, this deletes and re-adds the
+# whole layer in ~1h. `RSID_SUGG=1 make refresh-rsid` does both.
+refresh-rsid-suggestions: ; bash $(ST)/66_rsid_suggestions.sh
 # one genome only, from its per-genome extractor output: make refresh-rsid-genome GENOME=sorghum_353
 refresh-rsid-genome:
 	@[ -n "$(GENOME)" ] || { echo "usage: make refresh-rsid-genome GENOME=<system_name>"; exit 2; }
@@ -70,10 +82,6 @@ refresh-grassius-homolog: ; bash $(ST)/62_attr_atomic.sh grassius
 refresh-expression-attrs: ; bash $(ST)/62_attr_atomic.sh expression
 
 # default: full index. The genes core now includes expression: 60_solr_genes depends on
-# Rebuild ONLY the "Variants: rsID" suggestion layer (~10M docs), in place. Deliberately NOT part
-# of `make refresh-rsid`: that patches the genes core in minutes, this deletes and re-adds the
-# whole layer in ~1h. `RSID_SUGG=1 make refresh-rsid` does both.
-refresh-rsid-suggestions: ; bash $(ST)/66_rsid_suggestions.sh
 # 58_expression_attributes -> 55_atlas, so `make all` builds the expression collection,
 # the expression_attributes (mongo-native pipeline), and merges them into the solr genes.
 all: $(S)/52_tree_domains.done $(S)/22_germplasm.done $(S)/65_solr_suggestions.done
@@ -115,7 +123,9 @@ $(S)/55_atlas.done: $(S)/10_maps.done
 	bash $(ST)/55_atlas.sh
 $(S)/56_project_maize_v4v5.done: $(S)/55_atlas.done
 	bash $(ST)/56_project_maize_v4v5.sh
-$(S)/58_expression_attributes.done: $(S)/56_project_maize_v4v5.done $(S)/50_genes_decorate.done
+$(S)/57_jgi_expression.done: $(S)/56_project_maize_v4v5.done $(S)/50_genes_decorate.done
+	bash $(ST)/57_jgi_expression.sh
+$(S)/58_expression_attributes.done: $(S)/57_jgi_expression.done $(S)/50_genes_decorate.done
 	bash $(ST)/58_expression_attributes.sh
 $(S)/60_solr_genes.done: $(S)/50_genes_decorate.done $(S)/58_expression_attributes.done
 	bash $(ST)/60_solr_genes.sh
@@ -123,6 +133,14 @@ $(S)/65_solr_suggestions.done: $(S)/60_solr_genes.done
 	bash $(ST)/65_solr_suggestions.sh
 $(S)/70_services.done: $(S)/65_solr_suggestions.done
 	bash $(ST)/70_services.sh
+# gramene-kg knowledge graph of this release (kg00..kg70; kg80 promote stays manual). Not in `all`
+# and no stamp prerequisites, so `make 80_kg` after clean-stamps can never rebuild release cores;
+# the stage itself requires 65_solr_suggestions + 22_germplasm. Phony and not tied to its stamp: every
+# `make 80_kg` starts a NEW kg build (published curation changes no stamp here), `KG_RESUME=1 make 80_kg`
+# resumes the current one. $(S)/80_kg.done only records the last successful run; refresh-* remove it.
+.PHONY: 80_kg
+80_kg:
+	bash $(ST)/80_kg.sh
 
 # ---- convenience phony aliases: `make 25_reactome` etc. ----
 00_preflight: $(S)/00_preflight.done
@@ -147,7 +165,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 
 status:
 	@for s in 00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
-	          35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
+	          35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas 57_jgi_expression \
 	          56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services; do \
 	  if [ -f $(S)/$$s.done ]; then echo "  [x] $$s ($$(cat $(S)/$$s.done))"; else echo "  [ ] $$s"; fi; \
 	done
@@ -167,21 +185,26 @@ clean-stamps:
 refresh-compara:
 	rm -f $(S)/35_genetrees.done $(S)/45_homologs.done $(S)/50_genes_decorate.done \
 	      $(S)/52_tree_domains.done $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/80_kg.done
 	$(MAKE) all
 refresh-genes:
 	rm -f $(S)/40_genes_dump.done $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/80_kg.done
 	$(MAKE) all
 refresh-expression:
-	rm -f $(S)/55_atlas.done $(S)/56_project_maize_v4v5.done $(S)/58_expression_attributes.done $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/55_atlas.done $(S)/56_project_maize_v4v5.done $(S)/57_jgi_expression.done $(S)/58_expression_attributes.done $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/80_kg.done
 	$(MAKE) all
 refresh-reactome:
 	rm -f $(S)/25_reactome.done $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/80_kg.done
 	$(MAKE) all
 refresh-ontologies:
 	rm -f $(S)/15_ontologies.done $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/80_kg.done
 	$(MAKE) all
 # refresh direct Grassius TF families from the grassius.org source (merged into
 # grassius.tsv), then re-decorate + rebuild solr so it (and grassius_homolog) update.
@@ -189,6 +212,7 @@ refresh-grassius:
 	bash stages/28_grassius_source.sh
 	rm -f $(S)/50_genes_decorate.done $(S)/52_tree_domains.done \
 	      $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	rm -f $(S)/80_kg.done
 	$(MAKE) all
 # refresh the solr-gene attribute tables (MAKER/VEP/grassius_homolog/expression)
 # without re-decorating — regenerates solr_genes.attribs.json + rebuilds the genes
@@ -200,6 +224,80 @@ refresh-grassius:
 # changes but the decorated genes do not.
 refresh-attributes:
 	rm -f $(S)/60_solr_genes.done ../gramene-solr/genes/solr_genes.attribs.json
+	rm -f $(S)/80_kg.done
 	REBUILD_CORE=1 $(MAKE) 60_solr_genes
 	rm -f $(S)/65_solr_suggestions.done
 	REGEN_AUX=1 $(MAKE) 65_solr_suggestions
+
+# ── curated genes: names, synonyms and curated literature ──────────────────────────────────────
+# Ported from release70 (2026-11-06). Five curated sources hang off decorate.js's isGramene block
+# rather than a stage of their own: maizegdb, thalemine, rapdb, curated (the in-house CSHL sheet)
+# and generifs, plus pubmed_title_adder for reference titles. The capability token for curated
+# literature is `pubs`; there is no `curated` token.
+#
+# SAVED SEARCH: refresh-curated-incremental reaches solr by SUBSET recompute + ATOMIC update, so
+# the genes core is never recreated and `saved_search` (stored=true) survives. refresh-curated
+# does a FULL 60 rebuild and DOES drop it -- back it up and run restore-saved-search after.
+
+# Regenerate the curated source artifacts (in-house sheet + MaizeGDB). Outside `all` by design,
+# like 28_grassius_source: the committed artifacts are what decorate reads.
+29_curated_sources:
+	bash $(ST)/29_curated_sources.sh
+
+# The routine monthly path: regenerate the artifact, diff it, and land only what changed --
+# name / synonyms / curated literature -- by subset solr recompute and atomic update, then stage 65.
+# Ontology-term changes are deferred by design (ancestor_adder expands those during decorate);
+# `curated-ontology` is the no-rebuild route for those.
+refresh-curated-dry:
+	bash refresh_curated_incremental.sh
+
+refresh-curated-incremental:
+	bash refresh_curated_incremental.sh --apply
+
+# Fill the gene page's Title/Description column for references that arrived without one.
+# mongo-only: mongo2solr.join.js builds PUBMED__xrefs from xref.ids and drops `text`/`source`,
+# so there is nothing in the index to update -- no 60, no 65, no terms.tsv.
+# $(SEARCH)/pubmed_titles.tsv MUST be committed: decorate rebuilds every doc from the stage-40
+# dumps and pubmed_title_adder.js is the only thing that replays the titles.
+pubmed-titles-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node pubmed_titles.js
+
+pubmed-titles:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node pubmed_titles.js --apply
+
+# Reconcile the live genes core's PUBMED__xrefs with mongo by atomic update. PUBMED ids never
+# enter _terms, so no terms.tsv append and no stage 65.
+pubmed-solr-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node pubmed_solr_patch.js
+
+pubmed-solr:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node pubmed_solr_patch.js --apply
+
+# Land curated GO/PO/TO terms AND their ancestor expansion without a decorate. Every gene is first
+# replayed UNMODIFIED and compared with live, aborting unless annotations.{domains,taxonomy,
+# familyRoot,QTL_TO} reproduce exactly. No _terms change, so no stage 65.
+curated-ontology-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node curated_ontology_patch.js
+
+curated-ontology:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  node curated_ontology_patch.js --apply
+	cd ../gramene-solr/genes && . ../../build/config.sh && \
+	  SOLR_ID_FILTER=/tmp/curated_ontology_ids.txt node ./mongo2solr.join.js > /tmp/curated_ontology_solr.json
+	. ./config.sh && node curated_ontology_patch_solr.js \
+	  "$$SOLR_URL/$$SOLR_GENES_CORE" /tmp/curated_ontology_solr.json --apply
+
+# Full fallback: 50 -> 60 -> 65, deliberately skipping 52 and 58 (neither reads name/synonyms/
+# summary/description/xrefs nor writes into genes, so re-running them is a provable no-op; `touch`
+# advances their stamps while preserving the real run time their content records).
+# THIS REBUILDS THE GENES CORE AND DROPS saved_search -- take a backup and run restore-saved-search.
+refresh-curated:
+	bash $(ST)/29_curated_sources.sh
+	rm -f $(S)/50_genes_decorate.done
+	$(MAKE) 50_genes_decorate
+	touch $(S)/52_tree_domains.done $(S)/58_expression_attributes.done
+	rm -f $(S)/60_solr_genes.done $(S)/65_solr_suggestions.done
+	REBUILD_CORE=1 $(MAKE) 60_solr_genes
+	REGEN_AUX=1 REGEN_SUGGEST=1 $(MAKE) 65_solr_suggestions
