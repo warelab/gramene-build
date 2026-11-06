@@ -117,9 +117,19 @@ ok "dump taxon_id matches maps"
 # namespace. The dumps are the first place every gene id exists locally, so this is the earliest
 # point the check is cheap; the alternative was finding out nine minutes into the decorate.
 log "checking for gene stable id collisions across genomes"
+# ${BUILD_DIR}/tmp is the sort scratch dir. It must be created here: git does not track empty
+# directories, so a release root cut by CLONING (rather than cp -r from an existing one) has no
+# build/tmp at all, and check_stable_id_collisions.sh then fails inside mktemp. That failure
+# arrives as a non-zero exit and so was reported by the die below as "gene stable id collisions" --
+# sending you to hunt for collisions that do not exist. The mkdir is the fix; the message below now
+# says what else could have gone wrong.
+mkdir -p "${BUILD_DIR}/tmp" || die "cannot create the sort scratch dir ${BUILD_DIR}/tmp"
 SORT_TMP="${SORT_TMP:-${BUILD_DIR}/tmp}" SORT_MEM="${STABLE_ID_SORT_MEM:-4G}" \
   STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-}" \
   bash "${SEARCH}/check_stable_id_collisions.sh" "${SEARCH}/tmp" \
-  || die "gene stable id collisions (see above) — fix the source core, or record the decision in STABLE_ID_COLLISION_ALLOW"
+  || die "check_stable_id_collisions.sh failed. Usually that IS a real collision -- fix the source
+ core, or record the decision in STABLE_ID_COLLISION_ALLOW. But the script also exits non-zero if it
+ cannot write to SORT_TMP (${SORT_TMP:-${BUILD_DIR}/tmp}) or cannot read the dumps in ${SEARCH}/tmp,
+ so check the output above for a mktemp/permission error before going looking for colliding ids."
 ok "no blocking gene stable id collisions"
 stage_end

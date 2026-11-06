@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 . ./lib.sh
 stage_begin 20_variation
 
-assert_mongo_min maps 100   # dump_qtls joins QTLs to maps by system_name
+assert_mongo_min maps "${MAPS_MIN}"   # dump_qtls joins QTLs to maps by system_name
 
 mongo_drop qtls
 cd "${MONGODB_REPO}/variation"

@@ -133,11 +133,23 @@ ok "space for intermediates confirmed (${avail_gb} GB free >= ~${need_gb} GB nee
 # 7ab87c9 never reached solr, because this file was 2 days old and 32,254,103 lines either way.
 # The attribute merge below already had this check; the dump it depends on did not.
 #
-# Compare against the gene collection (its stage stamp) and against the mapper that writes the
-# file, so a change to either input invalidates it. -nt follows symlinks, so relocating the
-# intermediates with SOLR_DUMP_DIR does not defeat this.
+# Compare against the stage stamp of EVERY collection the mapper reads, plus the mapper itself,
+# so a change to any input invalidates it. -nt follows symlinks, so relocating the intermediates
+# with SOLR_DUMP_DIR does not defeat this.
+#
+# The list must name every collection mongo2solr.join.js touches, not just `genes`. It $lookups
+# `expression`, which 55_atlas loads and 56_project_maize_v4v5 then adds to -- and those two were
+# missing here, so the bug this check exists to prevent happened a second time, the same way:
+# on 2026-11-05 a re-fetch of 50 Atlas studies landed in mongo, 60_solr_genes reused an
+# 11 GB dump from the day before, and not one of the 50 reached the core. Every gate passed --
+# the counts match because this file is one line per gene and the gene set did not move -- and
+# the only visible symptom was an empty expression widget. If you add a $lookup to the mapper,
+# add its stage stamp here.
 genes_stale=0
-for dep in "${BUILD_DIR}/.state/50_genes_decorate.done" ./mongo2solr.join.js; do
+for dep in "${BUILD_DIR}/.state/50_genes_decorate.done" \
+           "${BUILD_DIR}/.state/55_atlas.done" \
+           "${BUILD_DIR}/.state/56_project_maize_v4v5.done" \
+           ./mongo2solr.join.js; do
   if [ -e "${dep}" ] && [ -e solr_genes.json ] && [ "${dep}" -nt solr_genes.json ]; then
     log "input newer than solr_genes.json: $(basename "${dep}") — will regenerate"
     genes_stale=1
@@ -296,6 +308,14 @@ done
 #    homology.<set>.supertree, so counting it in mongo means a full scan of 16.1M docs (the
 #    equivalent $exists probe took over 100s per set). The invariant used instead needs no scan --
 #    a supertree implies a tree, so the count must be non-zero and must not exceed the tree count.
+#    EXPECT_SUPERTREES=0 means this release's compara HAS no supertrees, which is a fact about the
+#    database and not a build failure. Verified for grapevine v5: ensembl_compara_5_87_grape1023v2
+#    has zero gene_tree_root rows with tree_type='supertree' (only tree_type='tree' on
+#    clusterset_id='default', 34,196). Without this gate the loop below would die after the ~1h
+#    load. The assertion stays live for any release that does have them -- do not delete it.
+if [ "${EXPECT_SUPERTREES:-1}" -eq 0 ] 2>/dev/null; then
+  ok "  supertrees: none expected (EXPECT_SUPERTREES=0; this compara has no tree_type='supertree' rows)"
+else
 for set in ${sets_in_mongo}; do
   if [ "${set}" = "gene_tree" ]; then sfield="supertree_attr_s"; else sfield="${set}_supertree_attr_s"; fi
   st="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=${sfield}:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
@@ -311,6 +331,7 @@ for set in ${sets_in_mongo}; do
     ok "  supertrees ${set}: ${st} genes of ${tn} in the set"
   fi
 done
+fi
 # report how many genes carry each merged capability
 for cap in MAKER VEP expression_attributes; do
   n="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=capabilities:${cap}&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
@@ -318,4 +339,46 @@ for cap in MAKER VEP expression_attributes; do
 done
 ghn="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=grassius_homolog__attr_ss:*&rows=0&wt=json" | grep -o '"numFound":[0-9]*' | sed 's/.*://')"
 log "  genes with grassius_homolog: ${ghn:-0}"
+
+# Every Atlas study that mongo says has evidence must be searchable in the core. Doc counts are
+# blind to this -- a study lives in a FIELD of a gene document, so losing all of them changes no
+# count -- and that is how a stale solr_genes.json silently dropped 50 studies on 2026-11-05.
+# Cheap in the healthy case: facet the core once, diff against the experiment list, and only pay
+# for the exact per-study evidence check on the ones the core is missing (normally none).
+log "checking every experiment with evidence in mongo is searchable in the core"
+solr_studies="$(curl -s "${SOLR_URL}/${SOLR_GENES_CORE}/select?q=*:*&rows=0&wt=json&facet=true&facet.field=expressed_in_gxa_attr_ss&facet.limit=-1&facet.mincount=1" \
+  | tr ',' '\n' | grep -oE '"E-[A-Z]+-[0-9]+"' | tr -d '"' | sort -u)"
+log "  studies searchable in the core: $(echo "${solr_studies}" | grep -c . )"
+missing="$(mongo_eval 'print(db.experiments.find({},{_id:1}).toArray().map(e=>e._id).join("\n"))' \
+  | tr -d '\r' | grep -E '^E-' | sort -u | comm -23 - <(echo "${solr_studies}"))"
+if [ -z "${missing}" ]; then
+  ok "every experiment is searchable in the core"
+else
+  nmiss="$(echo "${missing}" | grep -c .)"
+  log "  ${nmiss} experiment(s) absent from the core — checking whether any gene actually passes the evidence bar for them"
+  bad=""
+  for acc in ${missing}; do
+    # The same rule mongo2solr.join.js applies, and it must match it EXACTLY or this gate fails
+    # correct builds. The differential arm needs BOTH p < 0.05 and |l2fc| >= 1 in the SAME sample
+    # (the mapper reads Math.abs(sample.l2fc ?? 0) >= 1.0, so a missing l2fc fails), hence the
+    # $elemMatch with the l2fc $or nested inside it. Dropping the l2fc half flagged 7 studies
+    # that have a significant p-value but no fold change large enough -- they are correctly
+    # absent from the core, and the gate failed a good build on them.
+    has="$(mongo_eval "db.expression.countDocuments({\$or:[
+             {'${acc}':{\$elemMatch:{value:{\$gte:0.5}}}},
+             {'${acc}':{\$elemMatch:{p_value:{\$lt:0.05},\$or:[{l2fc:{\$gte:1}},{l2fc:{\$lte:-1}}]}}}
+           ]},{limit:1})" | tr -d '\r')"
+    if [ "${has:-0}" -gt 0 ]; then
+      bad="${bad} ${acc}"
+    else
+      log "    ${acc}: no gene passes the evidence bar — correctly absent"
+    fi
+  done
+  if [ -n "${bad}" ]; then
+    warn "these studies have evidence in mongo but are NOT searchable:${bad}"
+    die "the core is stale with respect to the expression collection. This is what a reused
+ solr_genes.json looks like: delete ${SOLR_DUMP_DIR:-.}/solr_genes.json and re-run this stage."
+  fi
+  ok "every absent experiment is legitimately absent (no gene passes the evidence bar)"
+fi
 stage_end

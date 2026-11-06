@@ -11,8 +11,8 @@ stage_begin 10_maps
 cd "${MONGODB_REPO}/maps"
 run "${NODE_BIN}" load.js
 
-assert_mongo_min maps 100        # 125 cores; cores with 0 genes/no taxon are skipped
-assert_mongo_min taxonomy 100
+assert_mongo_min maps "${MAPS_MIN}"   # 39 genomes here; cores with 0 genes/no taxon are skipped
+assert_mongo_min taxonomy "${TAXONOMY_MIN}"
 
 # QC: every genome's system_name must resolve in the ensembl REST registry
 log "QC: checking maps against ensembl REST registry"

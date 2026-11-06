@@ -40,11 +40,7 @@ cmp_taxa="$(mongo_eval "db.taxonomy.countDocuments({subset:'compara'})")"
 # Only the expected counts stay here -- those are facts about THIS release's compara, not about
 # the sets, and they are ALL trees of the clusterset (tree_type='tree'), not just the named ones.
 declare -A EXPECT_TREES=(
-  [gene_tree]=170253
-  [barley]=87626
-  [oat]=60915
-  [wheat]=38737
-  [rice]=28867
+  [gene_tree]=34196
 )
 mapfile -t TREE_SETS < <("${NODE_BIN}" -e \
   'require(process.argv[1]).TREE_SETS.forEach(function (t) { console.log([t.set, t.clusterset, t.prefix].join("|")); })' \

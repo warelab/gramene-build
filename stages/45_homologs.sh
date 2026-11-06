@@ -71,8 +71,13 @@ log "asserting cross-species orthology is present"
 hom_check="$(mongo --quiet "${MONGO_DB}" --eval '
   var want = ["ortholog_one2one","ortholog_one2many","ortholog_many2many","within_species_paralog"];
   var seen = {}, probed = 0, crossSpecies = 0;
-  // A small deterministic probe: these genes are in the default trees in every recent release.
-  var probes = ["Os01g0517500","AT1G78400","Zm00001eb000010"];
+  // A small deterministic probe. All three verified present in grapevine4 (and so expected in
+  // grapevine5, same cores): VIT_01s0010g03900 = vitis_vinifera, the VIT_-keyed 12X reference, so
+  // the gate actually covers the species this site is about; AT1G78400 and Os01g0517500 are the
+  // arabidopsis and rice outgroups. The main-release Zm00001eb000010 probe is dropped -- maize
+  // is present here as zea_maysb73, but a grape probe is the one worth having.
+  // NB this block is inside a single-quoted shell string: no apostrophes in these comments.
+  var probes = ["VIT_01s0010g03900","AT1G78400","Os01g0517500"];
   probes.forEach(function (id) {
     var d = db.homologs.findOne({_id: id});
     if (!d || !d.homologous_genes) { return; }

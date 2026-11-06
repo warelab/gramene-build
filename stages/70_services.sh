@@ -15,14 +15,20 @@ SWAGGER_PORT="${SWAGGER_PORT:-$((10000+DB_VERSION))}"
 EBEYE_PORT="${EBEYE_PORT:-$((11000+DB_VERSION))}"
 # The MAIN release serves a bare /v<N> (r69 serves /v69); only the species subsites use a
 # <species>_v<N> prefix. Getting this wrong points Apache at a path swagger never answers.
-BASEPATH="/v${DB_VERSION}"
+# Main release serves /v70; a subsite serves /<species>_v<N> (/grapevine_v5, /sorghum_v11).
+# config.sh sets it, so honour that rather than forcing the main-release shape.
+BASEPATH="${BASEPATH:-/v${DB_VERSION}}"
 SWAGGER_URL_LOCAL="http://localhost:${SWAGGER_PORT}${BASEPATH}/swagger"
 # ebeye's defaultServer is what BROWSERS resolve, so it must be the public proxied URL, not the
 # localhost one -- ebeye hands it to the client, which cannot reach squam directly. Every other
 # release follows this shape: r69 https://data.gramene.org/v69/swagger, r68 .../v68/swagger,
 # maize .../maize_v5/swagger, sorghum https://data.sorghumbase.org/sorghum_v11/swagger.
 # Override with SWAGGER_URL_PUBLIC if the proxy ever lands somewhere else.
-SWAGGER_URL_PUBLIC="${SWAGGER_URL_PUBLIC:-https://data.${SPECIES}.org${BASEPATH}/swagger}"
+# NB the data.${SPECIES}.org form only works for SorghumBase. There is no data.grapevine.org:
+# the grapevine subsite is served under data.gramene.org/grapevine_v4 today, and v5 at
+# data.gramene.org/grapevine_v5. config.sh sets this explicitly; the default below is
+# data.gramene.org so a site that forgets to does not end up with a hostname that does not exist.
+SWAGGER_URL_PUBLIC="${SWAGGER_URL_PUBLIC:-https://data.gramene.org${BASEPATH}/swagger}"
 
 log "swagger basePath=${BASEPATH} port=${SWAGGER_PORT}; ebeye port=${EBEYE_PORT}"
 
@@ -54,7 +60,11 @@ solr_host="$(echo "${SOLR_URL}" | sed -E 's#https?://##; s#/solr.*##')"
 # /solr/. The old pattern required the existing value to already read /solr/${SPECIES}_ --
 # after the sorghum_v11 merge it reads /solr/sorghum_, so it matched nothing, warned, and
 # would have left the API querying a core named sorghum_genes70 that does not exist.
-perl -pi -e "s{var urlBase = '[^']*';}{var urlBase = '${SOLR_URL}/';}" "${SJ}"
+# This is a SUBSITE, so cores are prefixed and urlBase must end at /solr/${SPECIES}_ -- it is
+# the main release that wants a bare /solr/. Getting this wrong is how the v4 checkout shipped
+# `/solr/oryza_` in the repo for two years with only an uncommitted local edit papering over it.
+# The genesURL assertion below is what actually catches it either way; this just makes it right.
+perl -pi -e "s{var urlBase = '[^']*';}{var urlBase = '${SOLR_URL}/${SPECIES}_';}" "${SJ}"
 want_core="${SOLR_URL}/${SOLR_GENES_CORE}"
 got_core="$(cd "${SWAGGER_REPO}" && "${NODE_BIN}" -e 'process.stdout.write(require("./api/helpers/solr.js").genesURL)' 2>/dev/null)"
 [ "${got_core}" = "${want_core}" ] \
@@ -77,6 +87,25 @@ perl -pi -e "s{defaultServer: \"[^\"]*\"}{defaultServer: \"${SWAGGER_URL_PUBLIC}
 grep -q "const DEFAULT_PORT = ${EBEYE_PORT};" "${EA}" && grep -q "defaultServer: \"${SWAGGER_URL_PUBLIC}\"" "${EA}" \
   && ok "ebeye app.js DEFAULT_PORT=${EBEYE_PORT}, defaultServer=${SWAGGER_URL_PUBLIC}" \
   || die "could not set the ebeye port/defaultServer in ${EA} — check it by hand"
+
+# ---- primers subsystem ----
+# config/default.yaml is the only place `primers.enabled` can be set persistently: the DEFAULTS
+# in api/helpers/primers/config.js hardcode `enabled: true`, and that file is deep-frozen, so a
+# site that cannot serve primers must say so here. This site needs it off unless its genomes are
+# configured in the primers config (site_key -> genome list -> assembly/BLAST paths); the helper
+# also expects primer3_core/ntthal/blastn to exist. Derived from config.sh, not hand-edited, so
+# it cannot drift the way the old uncommitted serving-tier edits did.
+PCFG="${SWAGGER_REPO}/config/default.yaml"
+if [ -f "${PCFG}" ] && grep -qE '^primers:' "${PCFG}"; then
+  # only the `enabled:` directly inside the primers block -- NOT repeat_mask.enabled or
+  # variation.enabled, which are nested two spaces deeper and must keep their own values.
+  perl -0pi -e "s{(^primers:\n(?:[^\S\n][^\n]*\n)*?[ ]{2}enabled:[ ]*)(?:true|false)}{\${1}${PRIMERS_ENABLED}}m" "${PCFG}"
+  grep -qE "^[ ]{2}enabled:[ ]*${PRIMERS_ENABLED}\b" "${PCFG}" \
+    && ok "swagger primers.enabled -> ${PRIMERS_ENABLED}" \
+    || die "could not set primers.enabled in ${PCFG} — check it by hand"
+else
+  log "  no primers block in ${PCFG} — nothing to set"
+fi
 
 # ---- optionally (re)start under pm2 ----
 if [ "${START_SERVICES:-0}" = "1" ] && command -v pm2 >/dev/null; then
@@ -157,15 +186,20 @@ cat >&2 <<EOF
 ──────────────────────────────────────────────────────────────────────────────
  MANUAL DEPLOYMENT CHECKLIST (infra steps the build cannot safely automate)
 ──────────────────────────────────────────────────────────────────────────────
- 1. Apache reverse proxy (gorgonzola: conf/extra/httpd-ssl.conf, under
-    data.${SPECIES}.org):  ${BASEPATH} -> $(hostname):${SWAGGER_PORT}
+ 1. Apache reverse proxy (gorgonzola: conf/extra/httpd-ssl.conf, under the
+    PUBLIC host of ${SWAGGER_URL_PUBLIC} -- NOT data.${SPECIES}.org, which for a
+    subsite does not exist):  ${BASEPATH} -> $(hostname):${SWAGGER_PORT}
     then: apachectl configtest && apachectl graceful
  2. Open firewall to ${SWAGGER_PORT} (swagger) and ${EBEYE_PORT} (ebeye).
- 3. Ensembl REST (${ENSEMBL_REST}): add this release's ${EXPECT_CORES} cores + compara
-    to the registry (reg.pm) and restart so the genome browser + maps QC resolve
-    every genome (preflight/maps flagged genomes missing from the registry).
- 4. BLAST: re-run ensure_blast.pl with the updated registry --out_dir the blast
-    BLAST_DB_ROOT, then restart the gramene-blast api under pm2.
+ 3. Ensembl REST (${ENSEMBL_REST}) and 4. BLAST: needed only if this release
+    CHANGED its Ensembl cores/compara. A rebuild that reuses the previous
+    release's ensembl_db_info.json (same ${EXPECT_CORES} cores, same compara --
+    diff it to be sure) needs NEITHER: the registry already resolves these
+    genomes and the BLAST databases already exist.
+      reg.pm serves ~91 species across EVERY subsite, so editing it to add
+      cores that are already there risks breaking unrelated sites. Check first:
+      diff this release's gramene-mongodb/ensembl_db_info.json against the
+      previous release's, and only touch the registry if the core list differs.
  5. gene-tree curation UI (gramene-genetree-vis): point defaultServerSb at
     ${SWAGGER_URL_PUBLIC}  (browser-facing, so the public proxied URL).
 ──────────────────────────────────────────────────────────────────────────────

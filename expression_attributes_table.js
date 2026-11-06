@@ -30,23 +30,21 @@ print(FIELDS.join('\t'));
 function clean(s) { return ('' + s).replace(/[,\t]/g, ' '); }       // commas split _ss; tabs break TSV
 function csv(arr) { return (arr && arr.length) ? arr.filter(function (x) { return x != null && x !== ''; }).map(clean).join(',') : ''; }
 
-// Grapevine ID resolution: expression_attributes keys grape genes by the "Vitis…"
-// scheme, but the genes core uses 12X "VIT_…". The genes collection carries the
-// crosswalk as synonyms (added by gramene-mongodb/search/vitis_synonym_adder.js), so
-// resolve Vitis→VIT_ through the genes collection (the single source of truth).
-// Unmapped Vitis ids are skipped — a raw Vitis id can never match a gene, it would
-// only inflate the loader's "absent" count.
-var vitisToVit = {};
-db.genes.find({ taxon_id: 29760001, synonyms: /^Vitis/ }, { _id: 1, synonyms: 1 }).forEach(function (g) {
-  (g.synonyms || []).forEach(function (s) { if (/^Vitis/.test(s)) vitisToVit[s] = g._id; });
-});
-
+// No grapevine id remapping on this subsite, deliberately.
+//
+// The main release carries a Vitis->VIT_ step here, because its grape genes are keyed
+// `Vitis##g#####` while the expression data is `VIT_`-keyed. None of that applies to a grapevine
+// subsite, and the step as written was wrong three ways: it read `synonyms` where
+// vitis_synonym_adder writes `alt_id`, it hardcoded taxon 29760001 which is `vitis_cabfranc` here
+// rather than either vinifera assembly, and `/^Vitis/` does not even match this site's ids --
+// `Vitvi` differs at the fourth character and `VIT_` is a different prefix entirely.
+//
+// Measured on grapevine4: the expression collection holds 29,971 `VIT_` ids and 22,048 `Vitvi`
+// ids and ZERO `Vitis...` ids, and every one of them resolves directly to a gene `_id`. So ids
+// pass through untouched. Rows whose id matches no gene are already counted by the loader's
+// "absent" tally in stage 60, so nothing is silently dropped by removing this.
 db.expression_attributes.find({}).forEach(function (d) {
   var gid = d._id;
-  if (/^Vitis/.test(gid)) {
-    if (!vitisToVit[gid]) return;     // grapevine Vitis id with no VIT_ mapping -> skip
-    gid = vitisToVit[gid];
-  }
   var a = d.attributes || {};
 
   // expression breadth/abundance CLASS (a set of facetable tokens)
