@@ -40,15 +40,46 @@ cmp_taxa="$(mongo_eval "db.taxonomy.countDocuments({subset:'compara'})")"
 # Only the expected counts stay here -- those are facts about THIS release's compara, not about
 # the sets, and they are ALL trees of the clusterset (tree_type='tree'), not just the named ones.
 declare -A EXPECT_TREES=(
-  [gene_tree]=34196
+  [gene_tree]=39709
 )
-mapfile -t TREE_SETS < <("${NODE_BIN}" -e \
+mapfile -t ALL_TREE_SETS < <("${NODE_BIN}" -e \
   'require(process.argv[1]).TREE_SETS.forEach(function (t) { console.log([t.set, t.clusterset, t.prefix].join("|")); })' \
   "${MONGODB_REPO}/trees/tree_sets.js")
-[ "${#TREE_SETS[@]}" -eq "${#EXPECT_TREES[@]}" ] \
-  || die "tree_sets.js yielded ${#TREE_SETS[@]} sets but ${#EXPECT_TREES[@]} expected counts are defined here —
- add or remove a count in EXPECT_TREES above to match trees/tree_sets.js"
-ok "tree sets from trees/tree_sets.js: $(printf '%s ' "${TREE_SETS[@]%%|*}")"
+
+# trees/tree_sets.js is SHARED with search/supertrees.js so the two cannot drift, which means it
+# lists every set the LINEAGE knows about -- on release70 that is the main release's barley, oat,
+# wheat and rice cultivar sets. Any one site's compara carries only some of them. Requiring an
+# expected count for all five failed maize v6, whose compara has 'default' (39,709) and nothing
+# else bar the alternative-method clustersets (nj-*, phyml-*) that Gramene does not index.
+#
+# So ask the compara which clustersets actually hold trees and build the work list from that. A
+# set absent upstream is not a build failure; it is a set this site does not have. Every set that
+# IS present still needs an expected count, so one that should have trees and comes back empty
+# fails as loudly as before -- that is the check which caught 147 trees vanishing from r70.
+TREE_SETS=()
+for spec in "${ALL_TREE_SETS[@]}"; do
+  IFS='|' read -r _ts _cs _pfx <<< "${spec}"
+  _n="$(MYSQL_PWD="${MYSQL_PASS}" mysql -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -N -e \
+        "SELECT COUNT(*) FROM ${COMPARA_DB}.gene_tree_root
+         WHERE tree_type='tree' AND clusterset_id='${_cs}';" 2>/dev/null)"
+  if [ "${_n:-0}" -gt 0 ]; then
+    TREE_SETS+=("${spec}")
+  else
+    log "  tree set '${_ts}': clusterset '${_cs}' has no trees in ${COMPARA_DB} — not hosted here, skipping"
+  fi
+done
+[ "${#TREE_SETS[@]}" -gt 0 ] \
+  || die "no set in trees/tree_sets.js has a single tree in ${COMPARA_DB}. Either the clusterset
+ names moved upstream, or COMPARA_DB points at the wrong database — check it against
+ ensembl_db_info.json before assuming the compara is empty."
+for spec in "${TREE_SETS[@]}"; do
+  IFS='|' read -r _ts _cs _pfx <<< "${spec}"
+  [ -n "${EXPECT_TREES[${_ts}]:-}" ] \
+    || die "tree set '${_ts}' (clusterset '${_cs}') HAS trees in ${COMPARA_DB} but no expected
+ count — add it to EXPECT_TREES above. Do not skip it: a present set with no count is exactly
+ the case this gate exists to catch."
+done
+ok "tree sets present in ${COMPARA_DB}: $(printf '%s ' "${TREE_SETS[@]%%|*}")"
 
 mongo_drop genetree
 cd "${MONGODB_REPO}/trees"
