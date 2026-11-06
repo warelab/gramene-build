@@ -28,16 +28,16 @@ export BIG_HEAP="--max-old-space-size=8192"
 export DUMP_HEAP="--max-old-space-size=4096"
 export DUMP_PARALLELISM="${DUMP_PARALLELISM:-6}"
 
-# --- target databases (DERIVED from collections.js: dbName='search', dbVersion='70') ---
+# --- target databases (DERIVED from collections.js: dbName='maize', dbVersion='6') ---
 _mongo_json="$("${NODE_BIN}" -e 'try{var c=require("'"${MONGOCONFIG_REPO}"'/collections.js");process.stdout.write(JSON.stringify(c.getMongoConfig()));setTimeout(()=>process.exit(0),50)}catch(e){process.stderr.write("CONFIG_LOAD_FAILED: "+e.message);process.exit(3)}' 2>/dev/null || true)"
 if [ -z "${_mongo_json}" ]; then
-  echo "FATAL: could not load ${MONGOCONFIG_REPO}/collections.js (need the main_v70 branch, dbName='search')" >&2
+  echo "FATAL: could not load ${MONGOCONFIG_REPO}/collections.js -- run 'make 05_install' first (it needs node_modules); expects dbName='maize' dbVersion='6'" >&2
   return 1 2>/dev/null || exit 1
 fi
 export MONGO_HOST="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).host))')"
 export MONGO_PORT="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).port))')"
 export DB_VERSION="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).version))')"
-export MONGO_DB="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).db))')"   # search70
+export MONGO_DB="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).db))')"   # maize6
 export MONGO_URI="mongodb://${MONGO_HOST}:${MONGO_PORT}"
 
 # --- solr cores: a SUBSITE prefixes its cores with $SPECIES (maize_genes6) ---
