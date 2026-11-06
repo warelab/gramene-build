@@ -42,10 +42,10 @@ export MONGO_URI="mongodb://${MONGO_HOST}:${MONGO_PORT}"
 
 # --- solr cores: a SUBSITE prefixes its cores with $SPECIES (maize_genes6) ---
 export SPECIES="maize"
-export PREV_DB="${SPECIES}$((DB_VERSION-1))"                   # grapevine4
-export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"         # grapevine_genes5
-export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"    # grapevine_suggestions5
-export PREV_GENES_CORE="${SPECIES}_genes$((DB_VERSION-1))"     # grapevine_genes4 (conf template + diffs)
+export PREV_DB="${SPECIES}$((DB_VERSION-1))"                   # maize5
+export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"         # maize_genes6
+export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"    # maize_suggestions6
+export PREV_GENES_CORE="${SPECIES}_genes$((DB_VERSION-1))"     # maize_genes5 (conf template + diffs)
 export PREV_SUGG_CORE="${SPECIES}_suggestions$((DB_VERSION-1))"
 # The core the LIVE v5 site serves, and so the source of saved_search tags for
 # `make restore-saved-search`. NB this is a core NAME, not a directory: on this host core
