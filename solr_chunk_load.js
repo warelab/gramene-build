@@ -9,8 +9,18 @@
 // last commit left off. Docs are upserts by uniqueKey(id), so re-loading the few
 // docs in the in-flight (uncommitted) batch is harmless.
 //
+// Batches are bounded by BOTH a doc count and a BYTE budget, and the byte budget is the one
+// that matters on a pan-genome site. post() builds the request body as a single JS string
+// ('[' + lines.join(',') + ']'), and V8 throws "Invalid string length" past
+// buffer.constants.MAX_STRING_LENGTH -- 536,870,888 bytes here. Maize v6's gene docs mean
+// 52.4 KB, so 10,000 of them is ~524 MB and roughly half of all batches overflowed; the stage
+// died with a bare "FATAL Invalid string length" after loading nothing. Sorghum's docs are
+// ~14 KB, which is why the same loader has always worked there. A doc count cannot express
+// this limit -- the bound is bytes, so bound on bytes.
+//
 // usage: SOLR_URL=http://localhost:8983/solr node solr_chunk_load.js <core> <file> [batchSize]
 //        SKIP_DOCS=N to force-skip a specific count instead of auto-detecting.
+//        SOLR_MAX_BATCH_BYTES=N to change the per-request byte budget (default 64 MiB).
 'use strict';
 const fs = require('fs');
 const readline = require('readline');
@@ -18,6 +28,10 @@ const readline = require('readline');
 const core = process.argv[2];
 const file = process.argv[3];
 const BATCH = parseInt(process.argv[4] || '10000', 10);
+// Per-request byte budget. 64 MiB is far below MAX_STRING_LENGTH (so the body can always be
+// built) and is a request size Solr handles comfortably; a ~500 MB POST is not.
+const MAX_BYTES = parseInt(process.env.SOLR_MAX_BATCH_BYTES || String(64 * 1024 * 1024), 10);
+const MAX_STRING = require('buffer').constants.MAX_STRING_LENGTH;
 // How often to issue an explicit commit=true (which opens+warms a new searcher).
 // Each such commit lets a killed load resume from the committed numFound, but adds
 // a searcher-reopen + segment flush. Solr's own autoCommit (openSearcher=false)
@@ -77,22 +91,38 @@ async function post(docLines, commit) {
                   + `sent as an upsert). Set SOLR_RESUME=1 to resume an interrupted load instead.`);
   }
   const rl = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
-  let seen = 0, batch = [], total = 0, batches = 0;
+  let seen = 0, batch = [], bytes = 0, total = 0, batches = 0, sinceCommit = 0;
+  // Commit cadence in DOCS, not batches: batches are byte-bounded now and so vary in size, while
+  // `COMMIT_EVERY` batches of `BATCH` docs is the ~500k-doc cadence the comment above promises.
+  const COMMIT_DOCS = COMMIT_EVERY > 0 ? COMMIT_EVERY * BATCH : 0;
+  const flush = async () => {
+    batches++;
+    sinceCommit += batch.length;
+    const doCommit = COMMIT_DOCS > 0 && sinceCommit >= COMMIT_DOCS;
+    await post(batch, doCommit);
+    if (doCommit) sinceCommit = 0;
+    total += batch.length;
+    batch = []; bytes = 0;
+    if (batches % 5 === 0) console.error(`  loaded ${skip + total} / docs so far (${batches} new batches)`);
+  };
   for await (const line of rl) {
     if (line.length && line.charCodeAt(0) === 123 /* { */) {
       seen++;
       if (seen <= skip) continue;          // already loaded in a prior run
-      batch.push(line);
-      if (batch.length >= BATCH) {
-        batches++;
-        await post(batch, COMMIT_EVERY > 0 && batches % COMMIT_EVERY === 0);
-        total += batch.length;
-        batch = [];
-        if (batches % 5 === 0) console.error(`  loaded ${skip + total} / docs so far (${batches} new batches)`);
+      if (line.length + 2 > MAX_STRING) {
+        const m = /"id":"([^"]+)"/.exec(line);
+        throw new Error(`doc ${m ? m[1] : 'at line ' + seen} is ${line.length} bytes, past this `
+                        + `node's MAX_STRING_LENGTH (${MAX_STRING}); it cannot be posted at any `
+                        + `batch size. That is a data defect, not a batching one.`);
       }
+      // Flush BEFORE pushing, so the body stays inside both bounds. The old code checked only the
+      // doc count and only AFTER pushing, which is how a 507 MB batch reached post().
+      if (batch.length && (batch.length >= BATCH || bytes + line.length + 1 > MAX_BYTES)) await flush();
+      batch.push(line);
+      bytes += line.length + 1;
     }
   }
-  if (batch.length) { await post(batch, false); total += batch.length; }
+  if (batch.length) await flush();
   await post([], true);   // final commit
   console.error(`DONE: core ${core} now has ${skip + total} docs (loaded ${total} this run) and is committed`);
 })().catch(e => { console.error('FATAL', e.message); process.exit(1); });
