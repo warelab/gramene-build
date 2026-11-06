@@ -15,8 +15,13 @@ cd "$(dirname "$0")/.."
 stage_begin 58_expression_attributes
 
 # ── mode ────────────────────────────────────────────────────────────────────────────
-# EXPR_ONLY="3702 4577" rebuilds ONLY those genomes' expression attributes, leaving every other
-# genome's artifacts and collection documents untouched. Unset = rebuild everything.
+# EXPR_ONLY="3702001 4577003" rebuilds ONLY those genomes' expression attributes, leaving every
+# other genome's artifacts and collection documents untouched. Unset = rebuild everything.
+#
+# These are FULL per-genome taxon_ids, not NCBI base ids: mongo_source.discover_genomes keys every
+# per-genome artifact on the full id precisely because the base id is not unique per genome (this
+# site has three B73 assemblies -- 4577003/4577005/4577006 -- all of which were 4577 before). A
+# base id here matches no genome and the stage dies on "could not resolve a short name".
 #
 # Genome-level (not gene-level) is the correct granularity: adding a study changes that genome's
 # reference quantile distributions (ref_<taxon>.json), which changes scores for EVERY gene of that
