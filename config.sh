@@ -73,7 +73,24 @@ export VEP_TABLE="${VEP_TABLE:-${SOLR_REPO}/vep/vep_attributes.txt}"
 # <db>.genes and the Solr core both key on it, so one copy would silently replace the other. List
 # "genomeA:genomeB" pairs here ONLY after examining them and accepting the loss; anything not
 # listed fails the stage. Empty is the correct value for a healthy release.
-export STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-}"
+# 151 gene stable ids are claimed by BOTH zea_maysb73v3 and zea_maysb73v4. Examined, and accepted
+# rather than "fixed": every one of the 151 is a miRBase name (zma-MIR1432, zma-MIR156a, ...) with
+# zero exceptions. miRBase names are not assembly-versioned, so the same miRNA gene carries the
+# same id in the B73 v3 and v4 annotations. This is correct upstream naming, not the wrong-prefix
+# error the checker's message suggests looking for (cf. triticum_aestivum_alchemy, where r69 used
+# TraesALC* and r70 the reference's TraesCS*).
+#
+# The live v5 site already ships this collapse, and v6 reproduces it exactly. The dump holds
+# 2,834,263 ids of which 2,834,112 are distinct -- and 2,834,112 is maize5.genes to the document.
+# Which copy survives is decided by load order, and the arithmetic says v3 wins: v4 dumps 44,474
+# ids and maize5 stores 44,323 for it, exactly 151 fewer, while v3 keeps all 39,625.
+#
+# So 151 v4 miRNA genes are genuinely dropped, here as in v5. That is a real if small data loss
+# and the checker says so plainly ("genes are still being dropped for those pairs -- this only
+# stops it blocking"). Giving each annotation version its own id space would be a source-core
+# change affecting the live site, so it is recorded here rather than done as a side effect of a
+# rebuild whose premise is that gene models do not move.
+export STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-zea_maysb73v3:zea_maysb73v4}"
 
 # --- node heaps ---------------------------------------------------------------
 # The stage defaults (atlas 48G, decorate 24G, solr 16G) are sized for the 267-genome main
