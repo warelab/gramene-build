@@ -180,11 +180,18 @@ assert_mongo_min pathways 100
 # (vitis_vinifera VIT_-keyed, vitis_viniferapn40024 Vitvi-keyed), and in live grapevine4 pathways
 # reached pn40024 on 1,113 genes and vitis_vinifera on ZERO -- so a rewrite moves the annotations
 # from one genome to the other and the site gains nothing. duplicate_vv.js emits BOTH keys instead.
-if "${NODE_BIN}" "${MONGODB_REPO}/reactome/duplicate_vv.js" < genes_to_pathways.raw.json > genes_to_pathways.json \
-   && "${NODE_BIN}" -e 'JSON.parse(require("fs").readFileSync("genes_to_pathways.json"))' 2>/dev/null; then
+# duplicate_vv.js lives on grapevine's gramene-mongodb branch, because the dual-namespace
+# problem is grapevine's. On a site without it the raw associations are already correct, so its
+# absence is normal and must not look like a failure -- distinguish "not present here" from
+# "present but broken", or every other site logs a scary warning for a file it should not have.
+if [ ! -f "${MONGODB_REPO}/reactome/duplicate_vv.js" ]; then
+  log "  no reactome/duplicate_vv.js here — using raw associations (expected off grapevine)"
+  cp genes_to_pathways.raw.json genes_to_pathways.json
+elif "${NODE_BIN}" "${MONGODB_REPO}/reactome/duplicate_vv.js" < genes_to_pathways.raw.json > genes_to_pathways.json \
+     && "${NODE_BIN}" -e 'JSON.parse(require("fs").readFileSync("genes_to_pathways.json"))' 2>/dev/null; then
   ok "applied grape VIT_/Vitvi key duplication"
 else
-  warn "duplicate_vv.js produced invalid json — using raw associations"
+  warn "duplicate_vv.js is present but produced invalid json — using raw associations"
   cp genes_to_pathways.raw.json genes_to_pathways.json
 fi
 assert_valid_json genes_to_pathways.json
@@ -198,20 +205,30 @@ assert_valid_json genes_to_pathways.json
 log "checking per-species pathway fill in genes_to_pathways.json"
 "${NODE_BIN}" --max-old-space-size=4096 -e '
   const d = require(process.argv[1]);
-  // Grape is the species this subsite exists for, and the two namespaces are checked separately:
-  // VIT_ is vitis_vinifera (the 12X reference, which had ZERO pathway genes in v4) and Vitvi is
-  // vitis_viniferapn40024 (which had 1,113). Both must be filled after duplicate_vv.js, so this
-  // gate is what proves the duplication worked rather than just producing valid json.
+  // One pattern per namespace a supplement can fill. Not every site carries every one: this list
+  // is deliberately a superset, and a namespace with NO keys at all means the site simply does
+  // not host that genome in that id form.
+  //
+  // So the failure being tested is "keys exist but none of them got filled" -- a supplement that
+  // ran and produced nothing. "0 filled of 0 keys" is not that; it is a species this build does
+  // not carry, and failing on it stops a correct build. maize v6 hit exactly that: it hosts
+  // vitis_vinifera in the Vitvi namespace only (1,153 filled of 1,153) and has zero VIT_ keys,
+  // and the gate called the absent namespace an empty supplement.
   const pat = { "grape VIT_ (vitis_vinifera)": /^VIT_\d+s\d+g\d+$/,
                 "grape Vitvi (pn40024)":       /^Vitvi\d+g\d+$/,
                 "maize v5 (Zm00001eb)":        /^Zm00001eb\d+$/,
                 "rice (Os..g..)":              /^Os\d+g\d+$/ };
-  let bad = [];
+  let bad = [], na = [];
   for (const [label, re] of Object.entries(pat)) {
     const keys = Object.keys(d).filter(k => re.test(k));
     const filled = keys.filter(k => ((((d[k]||{}).annotations||{}).pathways||{}).entries||[]).length);
+    if (!keys.length) { na.push(label); console.error("  " + label + ": not hosted here (0 keys)"); continue; }
     console.error("  " + label + ": " + filled.length + " filled of " + keys.length + " keys");
     if (!filled.length) { bad.push(label); }
+  }
+  if (na.length === Object.keys(pat).length) {
+    console.error("EMPTY: no checked namespace has ANY key — the association file did not load");
+    process.exit(1);
   }
   // Rice is also listed upstream as RAP-DB TRANSCRIPT ids, which can never join a gene-keyed
   // consumer. Report them so the count is never mistaken for coverage.
@@ -219,7 +236,7 @@ log "checking per-species pathway fill in genes_to_pathways.json"
   if (tx.length) { console.error("  note: " + tx.length + " rice keys are TRANSCRIPT ids (upstream shape; they cannot join genes)"); }
   if (bad.length) { console.error("EMPTY: " + bad.join("; ")); process.exit(1); }
 ' "${R}/genes_to_pathways.json" \
-  && ok "grape (both namespaces), maize v5 and rice all have filled pathway entries" \
+  && ok "every namespace this site hosts has filled pathway entries" \
   || die "a species supplement produced NO filled entries (see above).
  grape needs reactome/duplicate_vv.js to have run over the raw associations (step 4) with
  reactome/vv_orthologs.v3.v4.txt present -- if only ONE of the two grape namespaces is empty the
