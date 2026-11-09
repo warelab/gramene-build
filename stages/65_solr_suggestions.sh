@@ -64,6 +64,26 @@ else
   "${NODE_BIN}" ${BIG_HEAP} aux.js "${GENES_URL}"
 fi
 
+# Germplasm PTVs. Only produces anything where the site HAS germplasm: it reads the
+# mongo germplasm collection and keeps the accessions that genes actually carry in
+# VEP__merged__{EMS,NAT}__attr_ss, so a site with no germplasm (or no VEP) writes two
+# empty arrays and the loader below skips them.
+#
+# This was missing from the release70 lineage entirely -- suggestions/germplasm.js is
+# tracked on maize_v5 and on no mainline branch -- so porting maize v5 onto this harness
+# silently dropped the category. maize v6 shipped with 0 Germplasm PTVs where v5 has
+# 10,725. Do not drop it again when porting to another site.
+if [ -s "${SUGG}/germplasm.js" ]; then
+  if [ "${REGEN_AUX:-0}" != "1" ] && [ -s EMS_germplasm.json ] && [ -s NAT_germplasm.json ]; then
+    log "reusing existing germplasm suggestion json"
+  else
+    log "generating germplasm PTV suggestions (germplasm.js)"
+    "${NODE_BIN}" germplasm.js "${GENES_URL}"
+  fi
+else
+  log "  no suggestions/germplasm.js in this checkout — skipping Germplasm PTVs"
+fi
+
 if [ "${REGEN_SUGGEST:-0}" != "1" ] && [ -s genes.json ] && tail -c 3 genes.json | grep -q ']'; then
   log "reusing existing gene-level genes.json (set REGEN_SUGGEST=1 to regenerate)"
 else
@@ -107,7 +127,7 @@ solr_load_json_chunked "${SOLR_SUGG_CORE}" genes.json
 
 # Load the small ontology/structured files (curl is fine; each is < ~50MB).
 loaded=0
-for f in GO PO TO QTL_TO qtls taxonomy domains pathways TF expr; do
+for f in GO PO TO QTL_TO qtls taxonomy domains pathways TF expr EMS_germplasm NAT_germplasm; do
   if [ -s "${f}.json" ] && "${NODE_BIN}" -e 'JSON.parse(require("fs").readFileSync(process.argv[1]))' "${f}.json" 2>/dev/null; then
     solr_load_json "${SOLR_SUGG_CORE}" "${f}.json"; loaded=$((loaded+1))
   else
