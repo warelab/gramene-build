@@ -66,9 +66,19 @@ export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-${SPECIES}_genes$((DB_VERSI
 # "genes with VEP capability" line stage 60 prints against v5's 75,237.
 # grassius_homolog projects fresh regardless; report that count, do not assert it.
 export MAKER_TABLE="${MAKER_TABLE:-}"
-export VEP_TABLE="${VEP_TABLE:-}"   # EMPTY for the first run: rice has VEP on 122,535 genes in oryza_genes9,
-                                    # but the table must be regenerated from the five oryza_*_variation_8_108_*
-                                    # dbs with a reg.oryza_v10.pm. Stage 60 warns and skips a missing table.
+export VEP_TABLE="${VEP_TABLE:-${SOLR_REPO}/vep/vep_attributes.txt}"
+# v9's table, reused EXACTLY -- copied from v9's vep/vep_attributes.redo.txt.
+#
+# It is NOT derived from the Ensembl variation databases, so there is nothing here to
+# regenerate from them: it comes from SNPeff. Do not "rebuild" it with
+# dump_gene_level_VEP_table.pl against the oryza_*_variation_* dbs -- that would produce a
+# different table from a different source and silently change the site's VEP content.
+#
+# Which generation: v9's vep/ holds three. vep_attributes.txt and .fixed.txt have 124,082 data
+# rows; .redo.txt has 122,731, and oryza_genes9 carries the VEP capability on 122,535 genes --
+# so .redo.txt is the one that fed the live index (196 of its rows name ids the index does not
+# carry). Its mtime, 5 minutes before v9's final solr_genes2.vep.json, agrees.
+# This is the same decision taken for maize v6, which reused v5's table exactly.
 
 # --- gene stable id collisions ------------------------------------------------
 # 40_genes_dump refuses to pass dumps in which two genomes claim the same gene stable id, because
