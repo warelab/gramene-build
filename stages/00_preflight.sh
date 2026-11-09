@@ -82,10 +82,26 @@ if [ -n "${core1}" ]; then
     || { warn "core ${core1} has 0 genes — cores not loaded on ${MYSQL_HOST}"; fail=1; }
 fi
 
-vdb="$("${NODE_BIN}" -e 'const v=(require("'"${ENSEMBL_DB_INFO}"'").variations||[]); process.stdout.write(v[0]&&v[0].database?v[0].database:"")')"
-if [ -n "${vdb}" ]; then
-  vcount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${vdb}'")"
-  [ "${vcount}" = "1" ] && ok "variation db ${vdb} present on ${MYSQL_HOST}" || warn "variation db ${vdb} not found"
+# Check EVERY declared variation db, and FAIL rather than warn.
+#
+# This used to test only variations[0], and only warn. 20_variation hard-fails on a missing
+# one -- `dump_qtls failed: ER_BAD_DB_ERROR: Unknown database '...'` -- so the old check turned
+# a 2-second config error into a crash two stages and several minutes deep. Found exactly that
+# way on the oryza port: v9's frozen info file named sorghum_bicolor_variation_8_108_30, which
+# no longer exists on cabot.
+mapfile -t vdbs < <("${NODE_BIN}" -e 'const v=(require("'"${ENSEMBL_DB_INFO}"'").variations||{});
+  Object.keys(v).forEach(function (k) { if (v[k] && v[k].database) console.log(v[k].database); })')
+if [ "${#vdbs[@]}" -gt 0 ]; then
+  vmissing=0
+  for vdb in "${vdbs[@]}"; do
+    vcount="$(mysqlq "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${vdb}'")"
+    if [ "${vcount}" = "1" ]; then
+      ok "variation db ${vdb} present on ${MYSQL_HOST}"
+    else
+      warn "variation db ${vdb} NOT FOUND on ${MYSQL_HOST}"; vmissing=$((vmissing+1)); fail=1
+    fi
+  done
+  [ "${vmissing}" -eq 0 ] && ok "all ${#vdbs[@]} declared variation dbs present"
 else
   log "no variation dbs declared in ensembl_db_info.json (skipping variation check)"
 fi
