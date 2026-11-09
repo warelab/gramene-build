@@ -278,6 +278,41 @@ glob, and by deleting a genome's `.tsv` when it fails so no partial file survive
 assembly from the list of things you meant to include, and reconcile the output count against that
 list — a glob will faithfully include whatever happens to be lying around.
 
+## A full reindex drops user gene lists
+
+**Symptom.** Saved gene lists come back empty in the UI. `saved_search:*` in the genes core returns
+a handful of documents where the previous release's core returns thousands.
+
+**Cause.** A list's gene membership is stored **only** as `saved_search:<hash>` tags on the gene
+documents. `genelists` (in `userData1` and the per-site dbs) holds the hash, label and `n_genes` —
+**not the gene ids**. The tags are written by the API after the core is loaded, so any full reindex
+or core rebuild drops all of them, and nothing in the build puts them back.
+
+`saved_search` is `stored="true"`, so **atomic updates preserve it** — this is not the `_terms`
+failure mode. It is specifically a *full reload* that loses them.
+
+**Restore:**
+
+```bash
+make restore-saved-search DRY=1     # preview
+make restore-saved-search           # additive, idempotent, commits on the target core
+```
+
+It copies tags forward from `PREV_LIVE_GENES_CORE` (the core serving the **live** site — `10b`, not
+`sorghum_genes10`, which is a superseded build with far fewer tags), keeping only hashes that still
+exist in `genelists` so purged lists are not resurrected.
+
+**The limit, and it is a real one:** a list whose genes were tagged *only* in the core being rebuilt
+cannot be recovered from anywhere. When v11 was reindexed for the `_terms` fix, 58 of 65 lists were
+recoverable from the v10b core, and **7 created against the v11 dev site were lost** — their gene
+ids existed nowhere else. `60_solr_genes` now compares the tag count against the previous live core
+and warns, but the durable fix is to not rebuild a core carrying tags that exist nowhere else, or to
+export them first:
+
+```bash
+curl -s '.../select?q=saved_search:*&fl=id,saved_search&rows=10000000&wt=json' > saved_search_backup.json
+```
+
 ## Maize has no pathways (capabilities:pathways returns zero maize genes)
 
 **Symptom.** `q=*:* AND ((capabilities:pathways))` returns pathway genes for every species except

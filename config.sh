@@ -49,6 +49,10 @@ export PREV_DB="${SPECIES}$((DB_VERSION-1))"          # sorghum10
 export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"        # sorghum_genes11
 export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"   # sorghum_suggestions11
 export PREV_GENES_CORE="${SPECIES}_genes$((DB_VERSION-1))"
+# The core that actually serves the live site and therefore holds the user gene-list saved_search
+# tags. NOT PREV_GENES_CORE: the live release is 10b, and sorghum_genes10 is a superseded build with
+# far fewer tags. Used by `make restore-saved-search` after a full reindex.
+export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-${SPECIES}_genes10b}"
 export PREV_SUGG_CORE="${SPECIES}_suggestions$((DB_VERSION-1))"
 
 # --- solr gene attribute tables (merged into solr docs via add_attributes.pl) ---
