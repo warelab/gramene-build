@@ -139,7 +139,12 @@ $(S)/58_expression_attributes.done: $(S)/56_project_maize_v4v5.done $(S)/50_gene
 	bash $(ST)/58_expression_attributes.sh
 $(S)/60_solr_genes.done: $(S)/50_genes_decorate.done $(S)/58_expression_attributes.done
 	bash $(ST)/60_solr_genes.sh
-$(S)/65_solr_suggestions.done: $(S)/60_solr_genes.done
+# 22_germplasm is a PREREQUISITE here, not just a member of `all`. suggestions/germplasm.js
+# reads the mongo germplasm collection, so if make schedules 22_germplasm after this stage --
+# which it did on 2026-11-09, listing it only in `all` -- germplasm.js sees no collection, writes
+# two empty json files, and the Germplasm PTVs category is silently absent from the core while
+# every count and gate still passes. That is the maize v6 germplasm miss again, one layer out.
+$(S)/65_solr_suggestions.done: $(S)/60_solr_genes.done $(S)/22_germplasm.done
 	bash $(ST)/65_solr_suggestions.sh
 $(S)/70_services.done: $(S)/65_solr_suggestions.done
 	bash $(ST)/70_services.sh
