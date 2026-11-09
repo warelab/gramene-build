@@ -409,6 +409,6 @@ else
     die "the core is stale with respect to the expression collection. This is what a reused
  solr_genes.json looks like: delete ${SOLR_DUMP_DIR:-.}/solr_genes.json and re-run this stage."
   fi
-  ok "every absent experiment is legitimately absent (no gene passes the evidence bar)"
+  ok "every absent experiment is legitimately absent (no gene passes the evidence bar, or none that does still exists)"
 fi
 stage_end
