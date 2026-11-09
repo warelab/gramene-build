@@ -358,18 +358,48 @@ else
   log "  ${nmiss} experiment(s) absent from the core — checking whether any gene actually passes the evidence bar for them"
   bad=""
   for acc in ${missing}; do
-    # The same rule mongo2solr.join.js applies, and it must match it EXACTLY or this gate fails
-    # correct builds. The differential arm needs BOTH p < 0.05 and |l2fc| >= 1 in the SAME sample
-    # (the mapper reads Math.abs(sample.l2fc ?? 0) >= 1.0, so a missing l2fc fails), hence the
-    # $elemMatch with the l2fc $or nested inside it. Dropping the l2fc half flagged 7 studies
-    # that have a significant p-value but no fold change large enough -- they are correctly
-    # absent from the core, and the gate failed a good build on them.
-    has="$(mongo_eval "db.expression.countDocuments({\$or:[
+    # Two independent reasons a study can be legitimately absent, and BOTH must be ruled out
+    # before calling the core stale.
+    #
+    # (1) No gene passes the evidence bar. This rule is the one mongo2solr.join.js applies and it
+    #     must match EXACTLY or the gate fails correct builds. The differential arm needs BOTH
+    #     p < 0.05 and |l2fc| >= 1 in the SAME sample (the mapper reads
+    #     Math.abs(sample.l2fc ?? 0) >= 1.0, so a missing l2fc fails), hence the $elemMatch with
+    #     the l2fc $or nested inside it. Dropping the l2fc half flagged 7 studies that have a
+    #     significant p-value but no large enough fold change -- correctly absent, and the gate
+    #     failed a good build on them.
+    #
+    # (2) Every gene that passes the bar is absent from the `genes` collection. The mapper joins
+    #     expression onto genes, so evidence carried on a gene id that no longer exists can never
+    #     reach the core, however fresh the dump is. Rice hits this hard: 40745 of oryza's 335908
+    #     expression documents are keyed on retired indica `BGIOSGA*` stable ids (indica now ships
+    #     `Osind.*`), plus a few hundred ENSRNA ncRNA ids, and five studies -- E-GEOD-114188,
+    #     E-GEOD-116422, E-MTAB-1913, E-MTAB-1914, E-MTAB-6983 -- have ALL of their qualifying
+    #     evidence there. The live oryza_genes9 core returns 0 for all five as well, so this is a
+    #     property of the source data and not of the build. Without this arm the gate fails every
+    #     rice build on a freshly generated dump.
+    evq="{\$or:[
              {'${acc}':{\$elemMatch:{value:{\$gte:0.5}}}},
              {'${acc}':{\$elemMatch:{p_value:{\$lt:0.05},\$or:[{l2fc:{\$gte:1}},{l2fc:{\$lte:-1}}]}}}
-           ]},{limit:1})" | tr -d '\r')"
+           ]}"
+    has="$(mongo_eval "db.expression.countDocuments(${evq},{limit:1})" | tr -d '\r')"
     if [ "${has:-0}" -gt 0 ]; then
+      # Does any ONE of those genes exist? The $limit stops at the first hit, so this is cheap in
+      # exactly the case the gate exists to catch (a real stale core), and pays the full scan only
+      # for a study whose evidence is entirely orphaned.
+      live="$(mongo_eval "print(db.expression.aggregate([
+                 {\$match:${evq}},
+                 {\$lookup:{from:'genes',localField:'_id',foreignField:'_id',as:'g'}},
+                 {\$match:{'g.0':{\$exists:true}}},
+                 {\$limit:1}
+               ]).toArray().length)" | tr -d '\r')"
+    else
+      live=0
+    fi
+    if [ "${live:-0}" -gt 0 ]; then
       bad="${bad} ${acc}"
+    elif [ "${has:-0}" -gt 0 ]; then
+      log "    ${acc}: evidence exists, but only on gene ids absent from ${MONGO_DB}.genes — correctly absent"
     else
       log "    ${acc}: no gene passes the evidence bar — correctly absent"
     fi
