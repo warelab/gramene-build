@@ -40,7 +40,12 @@ cmp_taxa="$(mongo_eval "db.taxonomy.countDocuments({subset:'compara'})")"
 # Only the expected counts stay here -- those are facts about THIS release's compara, not about
 # the sets, and they are ALL trees of the clusterset (tree_type='tree'), not just the named ones.
 declare -A EXPECT_TREES=(
-  [gene_tree]=39709
+  # Verified directly against ensembl_compara_7_87_rice1025:
+  #   SELECT COUNT(*) FROM gene_tree_root WHERE clusterset_id='default' AND tree_type='tree' -> 45273,
+  # which equals oryza9.genetree exactly. The rest of that compara is nj-*/phyml-* alternative
+  # clustersets, which Gramene does not index, and there is no rice_cultivars clusterset.
+  # NB maize's 39709 would have PASSED the +/-bounds check (lo=35738 hi=59563) while being wrong.
+  [gene_tree]=45273
 )
 mapfile -t ALL_TREE_SETS < <("${NODE_BIN}" -e \
   'require(process.argv[1]).TREE_SETS.forEach(function (t) { console.log([t.set, t.clusterset, t.prefix].join("|")); })' \

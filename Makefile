@@ -93,7 +93,10 @@ restore-saved-search:
 # 22_germplasm is deliberately NOT a prerequisite: the main release ships without germplasm
 # (as r69 effectively does) and its source is not available, so requiring it would only
 # fail the build. The 22_germplasm target is kept for a one-off run if a source appears.
-all: $(S)/52_tree_domains.done $(S)/65_solr_suggestions.done
+# 22_germplasm IS a prerequisite on this site. The comment below explains why it is not one on
+# the main release -- but rice HAS germplasm (19,256 docs in oryza9), and leaving it out of `all`
+# is how maize v6 shipped with an empty Germplasm tab.
+all: $(S)/52_tree_domains.done $(S)/65_solr_suggestions.done $(S)/22_germplasm.done
 	@echo "BUILD COMPLETE — mongo + solr genes + suggestions ready"
 
 mongo: $(S)/52_tree_domains.done

@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # --- repo layout -------------------------------------------------------------
-export RELEASE_ROOT="/usr/local/gramene/subsites/maize/v6"
+export RELEASE_ROOT="/usr/local/gramene/subsites/rice/v10"   # NB subsites/oryza is a symlink to rice; use the real path so stamps resolve once
 export BUILD_DIR="${RELEASE_ROOT}/build"
 export MONGODB_REPO="${RELEASE_ROOT}/gramene-mongodb"
 export MONGOCONFIG_REPO="${RELEASE_ROOT}/gramene-mongodb-config"
@@ -41,7 +41,7 @@ export MONGO_DB="$(echo "$_mongo_json" | "${NODE_BIN}" -e 'let s="";process.stdi
 export MONGO_URI="mongodb://${MONGO_HOST}:${MONGO_PORT}"
 
 # --- solr cores: a SUBSITE prefixes its cores with $SPECIES (maize_genes6) ---
-export SPECIES="maize"
+export SPECIES="oryza"
 export PREV_DB="${SPECIES}$((DB_VERSION-1))"                   # maize5
 export SOLR_GENES_CORE="${SPECIES}_genes${DB_VERSION}"         # maize_genes6
 export SOLR_SUGG_CORE="${SPECIES}_suggestions${DB_VERSION}"    # maize_suggestions6
@@ -66,7 +66,9 @@ export PREV_LIVE_GENES_CORE="${PREV_LIVE_GENES_CORE:-${SPECIES}_genes$((DB_VERSI
 # "genes with VEP capability" line stage 60 prints against v5's 75,237.
 # grassius_homolog projects fresh regardless; report that count, do not assert it.
 export MAKER_TABLE="${MAKER_TABLE:-}"
-export VEP_TABLE="${VEP_TABLE:-${SOLR_REPO}/vep/vep_attributes.txt}"
+export VEP_TABLE="${VEP_TABLE:-}"   # EMPTY for the first run: rice has VEP on 122,535 genes in oryza_genes9,
+                                    # but the table must be regenerated from the five oryza_*_variation_8_108_*
+                                    # dbs with a reg.oryza_v10.pm. Stage 60 warns and skips a missing table.
 
 # --- gene stable id collisions ------------------------------------------------
 # 40_genes_dump refuses to pass dumps in which two genomes claim the same gene stable id, because
@@ -90,7 +92,10 @@ export VEP_TABLE="${VEP_TABLE:-${SOLR_REPO}/vep/vep_attributes.txt}"
 # stops it blocking"). Giving each annotation version its own id space would be a source-core
 # change affecting the live site, so it is recorded here rather than done as a side effect of a
 # rebuild whose premise is that gene models do not move.
-export STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-zea_maysb73v3:zea_maysb73v4}"
+export STABLE_ID_COLLISION_ALLOW="${STABLE_ID_COLLISION_ALLOW:-}"   # verified none on the rice genome set:
+                                    # every one of the 37 genomes' gene count equals its maps.num_genes in oryza9.
+                                    # The maize pair is wrong here (rice has no zea_maysb73v3) and would only
+                                    # ever PERMIT a real collision silently.
 
 # --- node heaps ---------------------------------------------------------------
 # The stage defaults (atlas 48G, decorate 24G, solr 16G) are sized for the 267-genome main
@@ -115,11 +120,20 @@ export SOLR_DATA_DIR="${SOLR_DATA_DIR:-/solr/data}"
 # returns 404 (not 503), i.e. no route exists. It must be pointed at squam:30006, and the ebeye
 # route at squam:31006, before 70_services can verify the public URL. Build everything else
 # first; that stage is last for exactly this reason.
-export SWAGGER_PORT="${SWAGGER_PORT:-30006}"
-export EBEYE_PORT="${EBEYE_PORT:-31006}"
-export BASEPATH="${BASEPATH:-/${SPECIES}_v${DB_VERSION}}"          # /maize_v6
+export SWAGGER_PORT="${SWAGGER_PORT:-20010}"   # rice uses the 20000+ band (v9 = 20009). 20010 verified free.
+                                    # These are PINNED LITERALS, not derived: leaving maize's 30006 here would
+                                    # collide with the LIVE maize_swagger6 service.
+export EBEYE_PORT="${EBEYE_PORT:-21010}"   # reserved; v9 has no ebeye service, so none is started
+export BASEPATH="${BASEPATH:-/oryza_v9}"   # NOT /oryza_v10. This build carries the v10 NAMES (db oryza10,
+                                    # cores oryza_genes10/oryza_suggestions10) as staging names, but it serves the
+                                    # EXISTING public path so the cutover is a service swap and the proxy never
+                                    # changes. See SETUP.md "staging names, then swap".
 # NB data.maize.org does not exist; the subsite is served under data.gramene.org.
 export SWAGGER_URL_PUBLIC="${SWAGGER_URL_PUBLIC:-https://data.gramene.org${BASEPATH}/swagger}"
+# CAUTION: with BASEPATH=/oryza_v9 this URL is already served by the LIVE v9 service, so stage 70's
+# "public spec url serving" check is a FALSE POSITIVE before cutover -- it proves v9 is up, not this build.
+# Verify this build on http://localhost:${SWAGGER_PORT}${BASEPATH}/... only, and re-check the public URL
+# AFTER the swap.
 # The swagger merged from release70 carries the primer-design and genotyping subsystems. Both
 # default to enabled and derive their site_key from swagger.yaml's basePath, so without this they
 # would advertise endpoints on /maize_v6 with no site configuration behind them. Disabled here
@@ -168,11 +182,11 @@ fi
 # NB this is a schema-108 site throughout (all 63 cores are *_core_*_108_*, the compara is _108_).
 # grapevine v5 was schema 87 and the main release is 116, so the harness is known to tolerate
 # all three -- but any schema-specific SQL is worth a second look if a stage misbehaves.
-export EXPECT_CORES=63         # 56 zea/pan-maize assemblies + 7 outgroups: arabidopsis,
+export EXPECT_CORES=37         # rice: 37 cores on cabot (mixed schema: mostly _8_108_, two _7_87_/_7_108_)
                                # chlamydomonas, drosophila, oryza, selaginella, sorghum, vitis.
-export EXPECT_ANCHORS=8        # the 7 outgroups + zea_maysb73. Unlike grapevine (0 anchors), this
+export EXPECT_ANCHORS=20       # counted in v9's frozen ensembl_db_info.json
                                # is the ordinary case for reactome/get_species_prefixes.js.
-export EXPECT_VARIATIONS=3     # oryza_sativa_variation_8_108_7, zea_maysb73_variation_9_108_8,
+export EXPECT_VARIATIONS=6     # five oryza_* variation dbs + sorghum_bicolor_variation_8_108_30
                                # sorghum_bicolor_variation_11_108_30 (substituted, see above).
                                # The oryza + sorghum pair is what produces QTL_TO genes, joined
                                # positionally not by id; the zea one additionally feeds VEP.
@@ -180,14 +194,16 @@ export EXPECT_VARIATIONS=3     # oryza_sativa_variation_8_108_7, zea_maysb73_var
 # --- subsite scale knobs ------------------------------------------------------
 # Several stages hardcode floors written for a ~125-core release. Grapevine has 39 genomes,
 # so those gates fail on a CORRECT build. Parameterised here rather than edited per stage.
-export MAPS_MIN="${MAPS_MIN:-55}"            # 63 genomes; cores with 0 genes/no taxon are skipped
+export MAPS_MIN="${MAPS_MIN:-35}"            # rice has exactly 37 maps; maize's 55 fails this site outright
 export TAXONOMY_MIN="${TAXONOMY_MIN:-100}"   # v5 produced 157, so 100 holds
 # Verified on ensembl_compara_5_108_maize0225: gene_tree_root holds tree_type='tree' (185,139
 # across all clustersets, of which 39,709 are clusterset_id='default' -- matching maize5.genetree
 # exactly) and tree_type='clusterset' (13). There are ZERO tree_type='supertree' rows, so despite
 # 56 cultivar assemblies there are no cultivar supertrees and stage 60's supertree assertion must
 # not fire.
-export EXPECT_SUPERTREES="${EXPECT_SUPERTREES:-0}"
+export EXPECT_SUPERTREES="${EXPECT_SUPERTREES:-0}"   # verified: zero tree_type='supertree' rows in
+                                    # ensembl_compara_7_87_rice1025. Setting this to 1 would die AFTER the
+                                    # multi-hour solr load.
 # trees/verify_tree_shape.js --deep-report asserts that SOME tree exceeds 112 levels, because
 # release 70 had 147 such trees and once lost them silently. That is a property of a 267-genome
 # compara, not of the storage model. NOT yet measured for this build -- set to 0 (report instead
