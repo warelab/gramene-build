@@ -33,6 +33,7 @@ ST    := stages
         refresh-grassius refresh-attributes 29_curated_sources refresh-curated \
         refresh-curated-dry refresh-curated-incremental \
         reactome-literature-fetch reactome-literature-dry reactome-literature \
+        rap-msu-lut rap-msu-lut-dry msu-alt-id-dry msu-alt-id msu-solr-dry msu-solr \
         pubmed-titles-dry pubmed-titles \
         pubmed-solr-dry pubmed-solr \
         curated-ontology-dry curated-ontology \
@@ -264,6 +265,40 @@ reactome-literature-dry:
 
 reactome-literature:
 	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node reactome_literature_patch.js --apply
+
+# ---- rice RAP -> MSU/RGAP correspondence (gene.alt_id) ----------------------------------------
+#
+# Regenerate search/OsNipp_IRGSP_MSU_lut.json from RAP-DB instead of the hand-made table every
+# subsite carries, which maps 5.1% of its entries to the WRONG CHROMOSOME, carries 2,853
+# fill-forward values RAP-DB marks as having no correspondence, and omits 5,548 real ones.
+# See fetch_rap_msu_lut.js for the measurements.
+#
+# A full decorate applies the new LUT by itself (msu6_adder reads it). These targets exist to land
+# it on an ALREADY BUILT collection: msu-alt-id rewrites mongo's gene.alt_id exactly as the adder
+# would, then msu-solr reconciles the index -- which it must, because alt_id is indexed and drives
+# id resolution in gramene-swagger's solr controller.
+#
+# Order matters: msu-alt-id first, then msu-solr. msu-solr discovers retracted ids from the CORE
+# as well as from mongo, so running it after the mongo patch still finds them.
+rap-msu-lut-dry:
+	node fetch_rap_msu_lut.js --dry
+
+rap-msu-lut:
+	node fetch_rap_msu_lut.js
+
+msu-alt-id-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node msu_alt_id_patch.js
+
+msu-alt-id:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node msu_alt_id_patch.js --apply
+
+msu-solr-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node msu_solr_patch.js
+
+msu-solr:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node msu_solr_patch.js --apply
 
 # Fill the gene page's "Title/Description" column for literature references that arrived without
 # one. The references that come off the Ensembl cores carry no text at all -- every medicago
