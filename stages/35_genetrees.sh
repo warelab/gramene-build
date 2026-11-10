@@ -86,6 +86,26 @@ for spec in "${TREE_SETS[@]}"; do
 done
 ok "tree sets present in ${COMPARA_DB}: $(printf '%s ' "${TREE_SETS[@]%%|*}")"
 
+# TREE_ID_ROOT_MARKER='' drops the marker that separates a SYNTHETIC tree id from a published one
+# (ORYZA9GT_1000025 rather than ORYZA9GT_root1000025 -- see build/config.sh for why this site needs
+# the former). That is only unambiguous while the clusterset publishes no stable_ids at all. Assert
+# it here, where it costs one COUNT, instead of discovering a collision after the ids are baked
+# into 45,273 tree docs and every gene's homology.gene_tree.id.
+if [ -n "${TREE_ID_ROOT_MARKER+set}" ] && [ -z "${TREE_ID_ROOT_MARKER}" ]; then
+  for spec in "${TREE_SETS[@]}"; do
+    IFS='|' read -r _ts _cs _pfx <<< "${spec}"
+    [ -n "${_pfx}" ] || continue
+    _named="$(MYSQL_PWD="${MYSQL_PASS}" mysql -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -N -e \
+      "SELECT COUNT(*) FROM ${COMPARA_DB}.gene_tree_root
+       WHERE tree_type='tree' AND clusterset_id='${_cs}' AND stable_id IS NOT NULL;" 2>/dev/null)"
+    [ "${_named:-0}" -eq 0 ] || die "TREE_ID_ROOT_MARKER is empty, but clusterset '${_cs}' has
+ ${_named} tree(s) WITH a published stable_id. Synthetic ids would then be '${_pfx}<root_id>' with
+ nothing marking them as synthetic, which can collide with a rewritten published id. Either unset
+ TREE_ID_ROOT_MARKER (back to 'root') or confirm the ids cannot overlap."
+    ok "clusterset '${_cs}': 0 published stable_ids, so '${_pfx}<root_id>' is unambiguous"
+  done
+fi
+
 mongo_drop genetree
 cd "${MONGODB_REPO}/trees"
 

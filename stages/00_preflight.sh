@@ -47,6 +47,24 @@ read -r ncores nvar nanchor jcompara < <("${NODE_BIN}" -e '
 [ "${nanchor}" = "${EXPECT_ANCHORS}" ]  && ok "anchor cores=${nanchor}"   || { warn "anchor cores=${nanchor}, expected ${EXPECT_ANCHORS}"; fail=1; }
 [ "${jcompara}" = "${COMPARA_DB}" ]     && ok "compara matches"           || { warn "compara mismatch: ${jcompara} vs ${COMPARA_DB}"; fail=1; }
 
+# extra_cores: genomes that cannot have a maps document (42_extra_genomes explains why) and so are
+# NOT counted in EXPECT_CORES. They still have to exist, and the failure mode if one does not is
+# the quiet one -- decorate ingests whatever tmp/*.json.gz happens to be there, so a vanished core
+# costs 56k genes with nothing anywhere reporting a shortfall.
+mapfile -t EXTRA_DBS < <("${NODE_BIN}" -e '
+  const j=require("'"${ENSEMBL_DB_INFO}"'");
+  (j.extra_cores||[]).forEach(c=>console.log(c.database));')
+if [ "${#EXTRA_DBS[@]}" -eq 0 ]; then
+  log "no extra_cores declared"
+else
+  for d in "${EXTRA_DBS[@]}"; do
+    n="$(MYSQL_PWD="${MYSQL_PASS}" mysql -h "${MYSQL_HOST}" -u "${MYSQL_USER}" -N -e \
+         "SELECT COUNT(*) FROM ${d}.gene WHERE is_current=1;" 2>/dev/null)"
+    if [ "${n:-0}" -gt 0 ]; then ok "extra core ${d}: ${n} genes"
+    else warn "extra core ${d} missing or empty on ${MYSQL_HOST}"; fail=1; fi
+  done
+fi
+
 # --- live services ----------------------------------------------------------
 "${MONGOSH}" --quiet "${MONGO_URI}/admin" --eval 'db.runCommand({ping:1}).ok' >/dev/null 2>&1 \
   && ok "mongo reachable at ${MONGO_URI}" || { warn "mongo unreachable"; fail=1; }

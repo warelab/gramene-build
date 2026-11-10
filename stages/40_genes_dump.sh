@@ -46,7 +46,11 @@ done < tmp/_dump_cmds.txt
 # unchanged in that case, so the line-count check below cannot see it -- the resulting dumps
 # carry taxon ids belonging to other genomes and decorate wedges partway through. Compare
 # against the maps stamp so this dependency is enforced rather than assumed.
-MAPS_STAMP=".state/10_maps.done"
+# ${STATE_DIR}, NOT ".state": this stage has already cd'd to ${SEARCH}, where no .state
+# directory exists, so the relative path made `[ -f "${MAPS_STAMP}" ]` false on every run and the
+# staleness guard the comment above describes never fired once. The dumps it was meant to
+# invalidate -- ones carrying another genome's reassigned taxon_id -- would have sailed through.
+MAPS_STAMP="${STATE_DIR}/10_maps.done"
 need_dump=()
 for name in "${!CMD[@]}"; do
   f="tmp/${name}.json.gz"

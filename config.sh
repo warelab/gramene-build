@@ -222,4 +222,22 @@ export EXPECT_SUPERTREES="${EXPECT_SUPERTREES:-0}"   # verified: zero tree_type=
 # here, turn this back on rather than leaving the guard disabled.
 export EXPECT_DEEP_TREES="${EXPECT_DEEP_TREES:-0}"
 
+# Gene-tree ids: reproduce oryza9's exactly.
+#
+# ensembl_compara_7_87_rice1025's 'default' clusterset publishes NO stable_ids -- all 45,273 trees
+# are unnamed -- so every tree id on this site is synthetic. The release70 lineage mints those as
+# '<clusterset>_root<root_id>' (default_root1000025) where v9 minted 'ORYZA9GT_<root_id>'
+# (ORYZA9GT_1000025). The numeric part is identical because this build reuses v9's compara, so the
+# two differ by prefix alone -- but every one of the 45,273 ids is baked into genetree._id AND into
+# each gene's homology.gene_tree.id, and the public path stays /oryza_v9 across the cutover, so a
+# published or bookmarked tree URL would 404.
+#
+# trees/tree_sets.js carries the prefix; this drops the 'root' marker that would otherwise yield
+# ORYZA9GT_root<root_id>. The marker exists to stop a synthetic id colliding with a published one,
+# which cannot happen in a clusterset that publishes none -- and 35_genetrees now ASSERTS that
+# precondition rather than assuming it, so if upstream ever names these trees the build fails
+# instead of minting ambiguous ids. Export the empty string, not unset: genetree.js and
+# tree_sets.js both distinguish '' from undefined precisely so this can be turned off.
+export TREE_ID_ROOT_MARKER=""
+
 export MONGOSH="$(command -v mongosh || command -v mongo)"

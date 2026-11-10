@@ -37,7 +37,7 @@ ST    := stages
         curated-ontology-dry curated-ontology \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
-        35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
+        35_genetrees 40_genes_dump 42_extra_genomes 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
         56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services
 
 28_grassius_source:
@@ -124,10 +124,19 @@ $(S)/35_genetrees.done: $(S)/30_curated.done $(S)/10_maps.done
 	bash $(ST)/35_genetrees.sh
 $(S)/40_genes_dump.done: $(S)/10_maps.done
 	bash $(ST)/40_genes_dump.sh
+# 42_extra_genomes dumps the two genomes that cannot have a maps document (oryza_sativamsu and
+# oryza_sativacshl both report assembly accession GCA_001433935.1, which is oryza_sativa's, so a
+# maps _id would collide). It is a PREREQUISITE of decorate, not a member of `all`: decorate
+# ingests `zcat tmp/*.json.gz`, so a dump that lands after it is simply not in the site, with no
+# count anywhere falling to show it. That ordering trap has now cost this build twice --
+# 22_germplasm was in `all` and still ran last.
+$(S)/42_extra_genomes.done: $(S)/40_genes_dump.done
+	bash $(ST)/42_extra_genomes.sh
 $(S)/45_homologs.done: $(S)/00_preflight.done
 	bash $(ST)/45_homologs.sh
 $(S)/50_genes_decorate.done: $(S)/15_ontologies.done $(S)/20_variation.done $(S)/25_reactome.done \
-                            $(S)/35_genetrees.done $(S)/40_genes_dump.done $(S)/45_homologs.done
+                            $(S)/35_genetrees.done $(S)/40_genes_dump.done $(S)/42_extra_genomes.done \
+                            $(S)/45_homologs.done
 	bash $(ST)/50_genes_decorate.sh
 $(S)/52_tree_domains.done: $(S)/50_genes_decorate.done $(S)/15_ontologies.done
 	bash $(ST)/52_tree_domains.sh
@@ -160,6 +169,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 30_curated: $(S)/30_curated.done
 35_genetrees: $(S)/35_genetrees.done
 40_genes_dump: $(S)/40_genes_dump.done
+42_extra_genomes: $(S)/42_extra_genomes.done
 45_homologs: $(S)/45_homologs.done
 50_genes_decorate: $(S)/50_genes_decorate.done
 52_tree_domains: $(S)/52_tree_domains.done
@@ -172,7 +182,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 
 status:
 	@for s in 00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 29_curated_sources 30_curated \
-	          35_genetrees 40_genes_dump 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
+	          35_genetrees 40_genes_dump 42_extra_genomes 45_homologs 50_genes_decorate 52_tree_domains 55_atlas \
 	          56_project_maize_v4v5 58_expression_attributes 60_solr_genes 65_solr_suggestions 70_services; do \
 	  if [ -f $(S)/$$s.done ]; then echo "  [x] $$s ($$(cat $(S)/$$s.done))"; else echo "  [ ] $$s"; fi; \
 	done
