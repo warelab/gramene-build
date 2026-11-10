@@ -107,7 +107,12 @@ while IFS=$'\t' read -r db dbhost dbuser dbpass; do
   # cannot separate these three genomes -- oryza_sativa, oryza_sativamsu and oryza_sativacshl all
   # carry ${taxon} -- so (system_name, db_type) is the only key that distinguishes them, and a
   # dump missing either would merge silently into the reference genome.
-  firstline="$(zcat "${f}" | head -1)"
+  # `zcat | head -1` leaves zcat with SIGPIPE, and config.sh sets `set -euo pipefail`, so the
+  # command substitution returns 141 and kills the stage AFTER a perfectly good dump. (The
+  # comment in 35_genetrees claiming these stages do not run under set -e is wrong: config.sh:11
+  # sets -euo pipefail for every one of them.) The value itself reads fine; only the status is
+  # bogus, so swallow it inside the pipeline rather than around the substitution.
+  firstline="$( { zcat "${f}" || true; } | head -1 )"
   echo "${firstline}" | "${NODE_BIN}" -e '
     let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
       const g=JSON.parse(s);
