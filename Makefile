@@ -32,6 +32,7 @@ ST    := stages
         refresh-compara refresh-genes refresh-expression refresh-reactome refresh-ontologies \
         refresh-grassius refresh-attributes 29_curated_sources refresh-curated \
         refresh-curated-dry refresh-curated-incremental \
+        reactome-literature-fetch reactome-literature-dry reactome-literature \
         pubmed-titles-dry pubmed-titles \
         pubmed-solr-dry pubmed-solr \
         curated-ontology-dry curated-ontology \
@@ -238,6 +239,31 @@ refresh-curated-dry:
 
 refresh-curated-incremental:
 	bash refresh_curated_incremental.sh --apply
+
+# Plant Reactome's curated publications: `{db:'PUBMED', source:'PlantReactome', text:<title>}`.
+#
+# oryza9 served these on 6,695 genes across 9 genomes with NO generator in any of the five repos
+# -- applied by hand, and no other site has them (search70, search69, maize6, grapevine5,
+# sorghum11 are all 0). build/fetch_reactome_literature.js documents how the rule was recovered
+# and what it was measured against; search/reactome_literature_adder.js applies it, and
+# 50_genes_decorate runs it, so a full build now produces them natively.
+#
+# `reactome-literature-fetch` refreshes gramene-mongodb/reactome/reactome_literature.json from
+# the Plant Reactome ContentService. That file must be COMMITTED, for the same reason
+# pubmed_titles.tsv must be: decorate rebuilds every gene doc from the stage-40 dumps and the
+# adder replays the artifact, so without the commit the next full build drops all of them.
+#
+# `reactome-literature` is the no-rebuild route to the same result, for a collection that was
+# decorated before the adder existed. mongo only -- then `make pubmed-solr` reconciles the index,
+# since mongo2solr builds PUBMED__xrefs from xref.ids alone.
+reactome-literature-fetch:
+	node fetch_reactome_literature.js
+
+reactome-literature-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node reactome_literature_patch.js
+
+reactome-literature:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node reactome_literature_patch.js --apply
 
 # Fill the gene page's "Title/Description" column for literature references that arrived without
 # one. The references that come off the Ensembl cores carry no text at all -- every medicago
