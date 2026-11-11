@@ -43,8 +43,12 @@ export MONGO_URI="mongodb://${MONGO_HOST}:${MONGO_PORT}"
 # --- solr cores: MAIN release uses bare genes<N>/suggestions<N> (no species prefix) ---
 export SPECIES="gramene"                                       # for log messages only
 export PREV_DB="search$((DB_VERSION-1))"                       # search69
-export SOLR_GENES_CORE="genes${DB_VERSION}"                    # genes70
-export SOLR_SUGG_CORE="suggestions${DB_VERSION}"              # suggestions70
+# Both honour an override from the environment so a core can be rebuilt ALONGSIDE the live one
+# and swapped in (CoreAdmin SWAP) instead of being recreated in place. That matters because
+# solr_recreate_core does UNLOAD&deleteIndex=true: re-running 60 or 65 against a live core
+# destroys the served index first and leaves it empty for the whole rebuild, with no backup.
+export SOLR_GENES_CORE="${SOLR_GENES_CORE:-genes${DB_VERSION}}"            # genes70
+export SOLR_SUGG_CORE="${SOLR_SUGG_CORE:-suggestions${DB_VERSION}}"        # suggestions70
 export PREV_GENES_CORE="genes$((DB_VERSION-1))"               # genes69 (conf template + diffs)
 export PREV_SUGG_CORE="suggestions$((DB_VERSION-1))"
 # The core the LIVE r69 site serves, and so the source of saved_search tags for
