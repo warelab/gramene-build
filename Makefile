@@ -34,6 +34,7 @@ ST    := stages
         refresh-curated-dry refresh-curated-incremental \
         pubmed-titles-dry pubmed-titles \
         pubmed-solr-dry pubmed-solr \
+        rap-msu-lut rap-msu-lut-dry msu-alt-id-dry msu-alt-id msu-solr-dry msu-solr \
         curated-ontology-dry curated-ontology \
         refresh-attr refresh-maker refresh-vep refresh-grassius-homolog refresh-expression-attrs \
         00_preflight 05_install 10_maps 15_ontologies 20_variation 22_germplasm 25_reactome 28_grassius_source 30_curated \
@@ -254,6 +255,47 @@ pubmed-solr-dry:
 pubmed-solr:
 	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
 	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node pubmed_solr_patch.js --apply
+
+# ---- rice RAP -> MSU/RGAP correspondence (gene.alt_id) ----------------------------------------
+#
+# Regenerate search/OsNipp_IRGSP_MSU_lut.json from RAP-DB. The hand-made table this replaces maps
+# 5.1% of its entries (1,738 of 33,938) to the WRONG CHROMOSOME, carries 2,853 fill-forward values
+# that RAP-DB marks as having no correspondence at all, and omits 5,548 real ones. RAP-DB's own
+# file has 0 chromosome disagreements out of 33,651. See fetch_rap_msu_lut.js for the derivation
+# and for the two traps in RAP-DB's format that silently corrupt the result.
+#
+# The same defective file is in maize v6, sorghum v10/v10b/v11, grapevine v5 and rice v8; fixing
+# it HERE is what lets each of those pick the fix up on its next build.
+#
+# A full decorate applies a new LUT by itself (msu6_adder reads it). These targets land it on an
+# ALREADY BUILT site: msu-alt-id rewrites mongo's gene.alt_id exactly as the adder would, then
+# msu-solr reconciles the index -- which it must, because alt_id is indexed and drives id
+# resolution in gramene-swagger's solr controller.
+#
+# Order matters: msu-alt-id first, then msu-solr (msu-solr also discovers retracted ids from the
+# CORE, so running it after the mongo patch still finds them). And because stage 65's
+# stale_vs_genes compares against the 60_solr_genes STAMP rather than the core's contents, a
+# direct core patch leaves `Genes: alternate id` stale with no warning: after msu-solr, re-run
+# stage 65 with REGEN_AUX=1 REGEN_SUGGEST=1 explicitly.
+rap-msu-lut-dry:
+	node fetch_rap_msu_lut.js --dry
+
+rap-msu-lut:
+	node fetch_rap_msu_lut.js
+
+msu-alt-id-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node msu_alt_id_patch.js
+
+msu-alt-id:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node msu_alt_id_patch.js --apply
+
+msu-solr-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node msu_solr_patch.js
+
+msu-solr:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node msu_solr_patch.js --apply
 
 # Land curated GO/PO/TO terms AND their ancestor expansion on the live index without a decorate.
 #
