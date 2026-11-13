@@ -34,6 +34,8 @@ ST    := stages
         refresh-curated-dry refresh-curated-incremental \
         reactome-literature-fetch reactome-literature-dry reactome-literature \
         rap-msu-lut rap-msu-lut-dry msu-alt-id-dry msu-alt-id msu-solr-dry msu-solr \
+        synonym-conflicts-dry synonym-conflicts synonym-conflicts-solr-dry synonym-conflicts-solr \
+        51_synonym_conflicts \
         pubmed-titles-dry pubmed-titles \
         pubmed-solr-dry pubmed-solr \
         curated-ontology-dry curated-ontology \
@@ -148,7 +150,13 @@ $(S)/56_project_maize_v4v5.done: $(S)/55_atlas.done
 	bash $(ST)/56_project_maize_v4v5.sh
 $(S)/58_expression_attributes.done: $(S)/56_project_maize_v4v5.done $(S)/50_genes_decorate.done
 	bash $(ST)/58_expression_attributes.sh
-$(S)/60_solr_genes.done: $(S)/50_genes_decorate.done $(S)/58_expression_attributes.done
+# 51_synonym_conflicts is a PREREQUISITE here, not merely a member of `all`. It cleans mongo's
+# gene.synonyms of other loci's identifiers, and 60 builds the genes core FROM mongo -- so if 60
+# ran first the core would be built from contaminated synonyms and would need a separate index
+# patch. Membership in `all` does not order anything; only this edge does.
+$(S)/51_synonym_conflicts.done: $(S)/50_genes_decorate.done
+	bash $(ST)/51_synonym_conflicts.sh
+$(S)/60_solr_genes.done: $(S)/50_genes_decorate.done $(S)/51_synonym_conflicts.done $(S)/58_expression_attributes.done
 	bash $(ST)/60_solr_genes.sh
 # 22_germplasm is a PREREQUISITE here, not just a member of `all`. suggestions/germplasm.js
 # reads the mongo germplasm collection, so if make schedules 22_germplasm after this stage --
@@ -174,6 +182,7 @@ $(S)/70_services.done: $(S)/65_solr_suggestions.done
 42_extra_genomes: $(S)/42_extra_genomes.done
 45_homologs: $(S)/45_homologs.done
 50_genes_decorate: $(S)/50_genes_decorate.done
+51_synonym_conflicts: $(S)/51_synonym_conflicts.done
 52_tree_domains: $(S)/52_tree_domains.done
 55_atlas: $(S)/55_atlas.done
 56_project_maize_v4v5: $(S)/56_project_maize_v4v5.done
@@ -299,6 +308,36 @@ msu-solr-dry:
 msu-solr:
 	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
 	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node msu_solr_patch.js --apply
+
+# ---- cross-locus synonyms (gene.synonyms carrying another locus's identifier) -----------------
+#
+# A gene's synonyms come partly from the Ensembl core's display xref, and dump_genes.js joins
+# external_synonym against g.display_xref_id. A `Uniprot_gn` xref row is keyed on the bare gene
+# SYMBOL, so when two unrelated genes abbreviate to the same symbol each inherits the other's
+# identifiers -- rice Os01g0100900 (sphingosine-1-phosphate lyase) carried Os01g0292900 and
+# LOC_Os01g18850, the ids of a SQUAMOSA-promoter-binding TF 10.6 Mb away.
+#
+# 51_synonym_conflicts does this as part of `make all`, before the core is built. These targets are
+# for an ALREADY BUILT site: synonym-conflicts rewrites mongo, then synonym-conflicts-solr cleans
+# the core's `synonyms` AND `_terms` (both carry it; cleaning only `synonyms` leaves the id
+# searchable, which is the false positive being fixed).
+#
+# The suggestions core needs NO rebuild: every removed value is another gene's primary id, and
+# primary-id suggestions are derived per-gene from the `id` field -- measured 0 of 1,437,629 with
+# num_genes>1. Re-probe that rather than assuming it if the suggestion builder changes.
+synonym-conflicts-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node synonym_conflict_patch.js
+
+synonym-conflicts:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" node synonym_conflict_patch.js --apply
+
+synonym-conflicts-solr-dry:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node synonym_conflict_solr.js
+
+synonym-conflicts-solr:
+	. ./config.sh && MONGO_URI="$$MONGO_URI" MONGO_DB="$$MONGO_DB" \
+	  GENES_CORE="$$SOLR_URL/$$SOLR_GENES_CORE" node synonym_conflict_solr.js --apply
 
 # Fill the gene page's "Title/Description" column for literature references that arrived without
 # one. The references that come off the Ensembl cores carry no text at all -- every medicago
