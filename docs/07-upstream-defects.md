@@ -20,11 +20,12 @@ Shareable version: <https://claude.ai/artifact/ECp1Ds2PbmJaYsPrdQdU4q>
 | 7 | `gene.description` empty in the e116 cores where e114 had it | 225 of 267 | **2,323,799 genes** --- since rescued locally from e114 | Ensembl Plants |
 | 8 | 6 `PUBMED` xrefs that are not PMIDs; one cites an unrelated paper | medicago | 6 accessions, 25 genes | Ensembl Plants / LeGOO |
 | 9 | A GeneRIF test record published as a gene annotation | arabidopsis | 1 gene | NCBI GeneRIF |
+| 10 | `Uniprot_gn` xref keyed on the gene SYMBOL, so homonyms swap identifiers | rice, ostreococcus | 6 genes here; 119 in the rice subsite | Ensembl Plants / UniProt |
 
 Defects 1 and 2 are visible in the **published release 69** data as well. Defect 7 is new in this
-release and is, by scale, the largest of the nine: it removes a gene description from roughly one
-plant gene in seven across the whole site. Defects 8 and 9 are the smallest by count and the only
-two that put a *wrong* statement on a gene page rather than a missing one.
+release and is, by scale, the largest of the ten: it removes a gene description from roughly one
+plant gene in seven across the whole site. Defects 8, 9 and 10 are the smallest by count and the
+only three that put a *wrong* statement on a gene page rather than a missing one.
 
 ---
 
@@ -314,6 +315,82 @@ indistinguishable from a real citation --- which is exactly what happened to `17
 recorded as negative cache entries in `gramene-mongodb/search/pubmed_titles.tsv` so the title
 resolver does not re-query them each run, which keeps the cells blank rather than wrong. `17918` is
 not filtered, so its jellyfish title is on the gene page.
+
+## 10. `Uniprot_gn` xrefs are keyed on the gene symbol, so homonyms swap identifiers
+
+A `Uniprot_gn` xref row carries the bare gene **symbol** in `dbprimary_acc`, not a locus. When two
+unrelated genes abbreviate to the same symbol, the identifiers UniProt associates with that symbol
+sit on one shared xref row, and `dump_genes.js` turns all of them into synonyms of whichever gene
+uses that row as its `display_xref_id`:
+
+```sql
+SELECT x.xref_id, x.dbprimary_acc, es.synonym
+FROM gene g JOIN xref x ON x.xref_id = g.display_xref_id
+JOIN external_synonym es ON es.xref_id = x.xref_id
+WHERE g.stable_id = 'Os01g0100900';
+```
+
+```
+2680296  SPL1  LOC_Os01g18850
+2680296  SPL1  Os01g0292900
+2680296  SPL1  Os4530.POR.1.pan0000737
+2680296  SPL1  OsJ_01398
+2680296  SPL1  P0706B05.40
+```
+
+`Os01g0100900` is *sphingosine-1-phosphate lyase* (UniProt `Q52RG7`, attached to its own
+translation, description "Sphingosine-1-phosphate lyase") at chr1:35,623-41,136. But
+`LOC_Os01g18850` and `Os01g0292900` are the MSU and RAP ids of `Os01g0292900` ---
+*OsSPL1 / OsSBP1*, "Similar to Squamosa-promoter binding-like protein 2" --- at chr1:10,650,597,
+**10.6 Mb away and in an unrelated gene family**. Two different genes abbreviate to SPL1: a
+sphingolipid catabolic enzyme and a SQUAMOSA-promoter-binding transcription factor.
+
+The consequence on the site is a search false positive: querying `LOC_Os01g18850` returned the
+correct gene, the MSU-genome gene, **and** the sphingosine lyase.
+
+**Two things to get right before "fixing" this anywhere.**
+
+*Not every synonym on such a row is foreign.* `OsJ_01398` and `P0706B05.40` are UniProt's own ORF
+names for `Q52RG7` and belong on this gene. Only the two ids naming the other locus are wrong.
+
+*The tell that it is upstream mis-assignment rather than a local join bug:* this gene's **own**
+correct MSU id, `LOC_Os01g01080`, is absent from that synonym list while the other locus's is
+present. RAP-DB's own RAP-MSU file gives `Os01g0100900 -> LOC_Os01g01010`-style 1:1 rows, and
+confirms `LOC_Os01g01080` for this locus.
+
+**Scale, and why the main release is mostly spared.** release70 builds rice from
+`oryza_sativa_core_70_116_7` and carries only **6** of these; the rice subsite is pinned to the
+frozen `oryza_sativa_core_8_108_7` and carries **119** across 56 genes. The e116 display xrefs
+differ --- the same gene is even named `SPL` there rather than `SPL1`. So this is partly fixed
+upstream already, but not deliberately and not everywhere.
+
+The 6 here are all mutual pairs, which is the clearest possible signature:
+
+| gene | name | inherited | from |
+| --- | --- | --- | --- |
+| `Os06g0176300` | OsHSL5 | `LOC_Os06g08014` | `Os06g0177600`, also OsHSL5 |
+| `Os06g0177600` | OsHSL5 | `LOC_Os06g07914` | `Os06g0176300` |
+| `Os06g0176700` | OsHSL1 | `LOC_Os06g08032` | `Os06g0178500`, also OsHSL1 |
+| `Os06g0178500` | OsHSL1 | `LOC_Os06g07932` | `Os06g0176700` |
+| `OSTLU_27409` | NRAMP1 | `OSTLU_2189` | another *O. lucimarinus* gene |
+| `OSTLU_119497` | psbW | `OSTLU_40772` | another *O. lucimarinus* gene |
+
+The *Ostreococcus* pair matters: this is **not rice-specific**. It concentrates in rice because
+rice has the most symbol-bearing xrefs.
+
+**Local status: worked around.** `51_synonym_conflicts` (`build/synonym_conflict_patch.js`) drops a
+synonym that identifies another gene --- by `_id` *or* by `alt_id` --- unless the two are plausibly
+the same locus. That exemption is load-bearing: a split or merged gene model legitimately carries
+its neighbour's retired id, and the same-chromosome gaps separate cleanly into 0/365/428/690 bp
+against 13.9 kb and up, so the 2 kb threshold sits in empty space. The stage runs between decorate
+and the solr build, so a full rebuild needs no index patch; `make synonym-conflicts` +
+`make synonym-conflicts-solr` land it on an already-built site.
+
+A synonym naming an id that is **absent** from the site is deliberately left alone --- with nothing
+to locate there is no evidence it names a different locus. Rice keeps two such
+(`Os11g0155900` and `Os06g0159450`, both citing the retired `Os06g0159501`).
+
+---
 
 ## Items for other maintainers
 
