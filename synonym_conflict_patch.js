@@ -81,35 +81,57 @@ function conflicts(gene, ownersOf, adjacency) {
   console.log((APPLY ? 'PATCHING ' : 'dry run against ') + DB + '.genes'
     + (APPLY ? '' : ' -- nothing is written') + '   (adjacency ' + ADJACENCY + ' bp)\n');
 
-  // Which synonym strings identify a gene here, by _id or by alt_id? distinct() keeps this to one
-  // pass plus batched lookups rather than a per-gene query over the whole collection.
-  const syns = (await genes.distinct('synonyms')).filter(s => typeof s === 'string');
-  const owners = new Map();                       // synonym string -> [{_id, location}]
+  // THREE STREAMING PASSES, and the shape matters. The first version batched the synonym strings
+  // and ran `{alt_id: {$in: batch}}` per batch -- but alt_id carries no mongo index, so each batch
+  // was a full collection scan: ~56 scans of 16.1M documents on release70, which ran past a 50
+  // minute timeout (exit 124). Wiring that into stage 51 would have armed a build that hangs.
+  // Streaming costs three scans total regardless of how many distinct synonyms there are, and
+  // needs no index.
+  //
+  // Memory stays bounded: pass 1 holds the synonym strings, pass 2 holds owners only for the few
+  // that identify a gene (hundreds), and pass 3 holds nothing.
+
+  // pass 1 -- every synonym string in the collection
+  const synSet = new Set();
+  let scanned = 0;
+  let cur = genes.find({ synonyms: { $exists: true } }, { projection: { synonyms: 1 } });
+  while (await cur.hasNext()) {
+    const g = await cur.next();
+    for (const x of (Array.isArray(g.synonyms) ? g.synonyms : [g.synonyms])) {
+      if (typeof x === 'string') synSet.add(x);
+    }
+    if (++scanned % 200000 === 0) process.stdout.write('  pass 1: ' + scanned + ' genes\r');
+  }
+  console.log('distinct synonym strings      : ' + synSet.size + '   (from ' + scanned + ' genes with synonyms)');
+
+  // pass 2 -- which of those identify a gene, by _id or by alt_id
+  const owners = new Map();
   const add = (k, g) => {
     if (!owners.has(k)) owners.set(k, []);
     if (!owners.get(k).some(o => o._id === g._id)) owners.get(k).push({ _id: g._id, location: g.location });
   };
   let byId = 0, byAlt = 0;
-  for (let i = 0; i < syns.length; i += 2000) {
-    const batch = syns.slice(i, i + 2000);
-    for (const g of await genes.find({ _id: { $in: batch } },
-      { projection: { location: 1 } }).toArray()) { add(g._id, g); byId++; }
-    for (const g of await genes.find({ alt_id: { $in: batch } },
-      { projection: { location: 1, alt_id: 1 } }).toArray()) {
+  scanned = 0;
+  cur = genes.find({}, { projection: { alt_id: 1, location: 1 } });
+  while (await cur.hasNext()) {
+    const g = await cur.next();
+    if (synSet.has(g._id)) { add(g._id, g); byId++; }
+    if (g.alt_id) {
       for (const a of (Array.isArray(g.alt_id) ? g.alt_id : [g.alt_id])) {
-        if (batch.indexOf(a) >= 0) { add(a, g); byAlt++; }
+        if (typeof a === 'string' && synSet.has(a)) { add(a, g); byAlt++; }
       }
     }
+    if (++scanned % 500000 === 0) process.stdout.write('  pass 2: ' + scanned + ' genes\r');
   }
-  console.log('distinct synonym strings      : ' + syns.length);
   console.log('of those, identify a gene     : ' + owners.size + '  (' + byId + ' by _id, ' + byAlt + ' by alt_id)');
   const ownersOf = s => owners.get(s);
-  const ids = Array.from(owners.keys());
 
   const ops = [];
   let changed = 0, removed = 0, keptAdjacent = 0;
   const bySys = {}, examples = [], kept = [];
-  const cursor = genes.find({ synonyms: { $in: ids } },
+  // pass 3 -- apply the rule. Streams every gene with synonyms rather than querying
+  // `{synonyms: {$in: <owner keys>}}`, which is the same unindexed-field trap as above.
+  const cursor = genes.find({ synonyms: { $exists: true } },
     { projection: { synonyms: 1, alt_id: 1, location: 1, name: 1, system_name: 1 } });
   while (await cursor.hasNext()) {
     const g = await cursor.next();
