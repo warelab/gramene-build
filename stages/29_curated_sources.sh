@@ -90,5 +90,52 @@ else
   fi
 fi
 
+# ---------------------------------------------------------------------------------------------
+# 3. RAP-DB's curated rice gene list
+# ---------------------------------------------------------------------------------------------
+# Brought in here for the same reason as the curation sheet: rapdb.js used to fetch this live
+# during decorate, with a copy on dev.gramene.org as its only fallback. That copy is a mirror we
+# do not control and do not want; and a transient failure of the live fetch yields an EMPTY lut,
+# which silently drops every RAP-DB name, synonym and reference from the build rather than failing
+# it. (Observed: the same URL answered 6,747 loci and then 0 within minutes.) A tracked artifact
+# makes staleness visible in git and the build reproducible offline.
+#
+# NB the host. rapdb.dna.affrc.go.jp is DEAD -- it does not answer at all -- and naro.go.jp is the
+# live one. Same trap the RAP-MSU fetcher documents.
+RAPDB="${SEARCH}/rapdb_curated_genes.json"
+# NB the .json suffix is required, not cosmetic: the counts below use node `require`, which
+# only parses a file as JSON when it ends in .json. Naming this "${RAPDB}.fromsource" makes
+# require() treat it as a CommonJS module and fail confusingly. Same reason CSHL_SRC above
+# is cshl_curated_genes.fromsheet.json.
+RAPDB_SRC="${SEARCH}/rapdb_curated_genes.fromsource.json"
+RAPDB_URL="${RAPDB_URL:-https://rapdb.dna.naro.go.jp/curated_genes/curated_genes.json}"
+
+log "fetching RAP-DB curated rice genes"
+if curl -fsSL --max-time 300 -o "${RAPDB_SRC}" "${RAPDB_URL}"; then
+  assert_valid_json "${RAPDB_SRC}"
+  rapdb_entries="$("${NODE_BIN}" -e "var a=require('${RAPDB_SRC}');console.log(Array.isArray(a)?a.length:0)")"
+  rapdb_refs="$("${NODE_BIN}" -e "console.log(require('${RAPDB_SRC}').reduce((n,e)=>n+Object.keys(e.references||{}).length,0))")"
+  # Floor, not an exact count: RAP-DB curation grows. 6,747 loci today; anything far below that
+  # means a truncated download or a changed payload shape, both of which would quietly thin the
+  # rice annotation.
+  RAPDB_MIN="${RAPDB_MIN:-6000}"
+  [ "${rapdb_entries}" -ge "${RAPDB_MIN}" ] \
+    || die "RAP-DB returned only ${rapdb_entries} loci (floor ${RAPDB_MIN}) -- refusing to promote."
+  ok "RAP-DB curation: ${rapdb_entries} loci, ${rapdb_refs} references"
+  if [ -s "${RAPDB}" ]; then
+    prev="$("${NODE_BIN}" -e "console.log(require('${RAPDB}').length)" 2>/dev/null || echo 0)"
+    log "rapdb_curated_genes.json: ${prev} -> ${rapdb_entries} loci"
+  fi
+  mv "${RAPDB_SRC}" "${RAPDB}"
+  ok "promoted ${RAPDB}"
+else
+  rm -f "${RAPDB_SRC}"
+  if [ -s "${RAPDB}" ]; then
+    warn "RAP-DB download failed -- keeping the committed ${RAPDB}"
+  else
+    die "RAP-DB download failed and no committed artifact exists"
+  fi
+fi
+
 log "curated source artifacts refreshed. Run 'make refresh-curated' to re-decorate + update solr."
 stage_end
