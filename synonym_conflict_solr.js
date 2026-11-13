@@ -64,20 +64,28 @@ function req(url, body) {
   // Candidates: every gene the core lists a synonym for that mongo no longer has. The core is the
   // side still holding the stale values, so it drives the candidate set (the same lesson as the
   // MSU patch: a mongo-only candidate set misses exactly the rows that were cleaned).
-  const docs = [];
+  //
+  // TWO PHASES, and the split is not an optimisation. Fetching `fields: '*'` for all ~45k
+  // synonym-bearing docs and holding them exhausted node's heap on maize and sorghum: the ROW
+  // counts are near-identical across sites (41k-49k) but those genes carry far more stored fields
+  // (expression, VEP, pan-gene), so the same rows are several times the bytes. Rice and grapevine
+  // happened to fit, which is exactly the kind of difference that makes this look like it works.
+  // Phase 1 pages with three small fields; phase 2 fetches whole documents only for the few genes
+  // that actually change (tens, not tens of thousands).
+  const slim = [];
   let cursor = '*';
   for (;;) {
-    const body = JSON.stringify({ query: 'synonyms:*', fields: '*', limit: 2000,
+    const body = JSON.stringify({ query: 'synonyms:*', fields: 'id,name,synonyms', limit: 5000,
       sort: 'id asc', params: { cursorMark: cursor } });
     const j = JSON.parse(await req(CORE + '/select', body));
-    for (const d of j.response.docs) docs.push(d);
-    process.stdout.write('  core docs with synonyms: ' + docs.length + '\r');
+    for (const d of j.response.docs) slim.push(d);
+    process.stdout.write('  core docs with synonyms: ' + slim.length + '\r');
     if (!j.nextCursorMark || j.nextCursorMark === cursor || !j.response.docs.length) break;
     cursor = j.nextCursorMark;
   }
-  console.log('\ncore docs carrying synonyms : ' + docs.length);
+  console.log('\ncore docs carrying synonyms : ' + slim.length);
 
-  const ids = docs.map(d => d.id);
+  const ids = slim.map(d => d.id);
   const mongoSyn = new Map();
   for (let i = 0; i < ids.length; i += 2000) {
     for (const g of await genes.find({ _id: { $in: ids.slice(i, i + 2000) } },
@@ -86,16 +94,15 @@ function req(url, body) {
     }
   }
 
-  const updates = [];
-  let changed = 0, dropped = 0, termsKept = 0, mismatched = 0;
-  const kept = [], bad = [];
-  for (const d of docs) {
+  // phase 1: which genes have stale synonyms, and which values
+  const pending = [];
+  let mismatched = 0;
+  const bad = [];
+  for (const d of slim) {
     const sIn = Array.isArray(d.synonyms) ? d.synonyms : (d.synonyms ? [d.synonyms] : []);
     const mIn = mongoSyn.get(d.id) || [];
     const removals = sIn.filter(s => mIn.indexOf(s) < 0);
     if (!removals.length) continue;
-    // A synonym mongo has that the core lacks is expected when mongo2solr's filter explains it:
-    // equal to the name or id case-insensitively, or a case-variant of a synonym already kept.
     const lcKept = new Set(sIn.map(x => String(x).toLowerCase()));
     const lcName = String(d.name || '').toLowerCase(), lcId = String(d.id).toLowerCase();
     const unexplained = mIn.filter(s => {
@@ -104,6 +111,34 @@ function req(url, body) {
       return lc !== lcName && lc !== lcId && !lcKept.has(lc);
     });
     if (unexplained.length) { mismatched++; if (bad.length < 5) bad.push(d.id + ' core lacks ' + unexplained.join(',')); continue; }
+    pending.push({ id: d.id, removals: removals, next: sIn.filter(x => removals.indexOf(x) < 0) });
+  }
+  if (mismatched) {
+    console.error('\nABORT: ' + mismatched + ' gene(s) have synonyms in mongo that the core lacks, so the core'
+      + ' is not merely stale and `set` could lose data. Nothing was written.');
+    for (const b of bad) console.error('  ' + b);
+    await client.close(); process.exit(2);
+  }
+
+  // phase 2: full documents, only for the genes that change
+  const docs = [];
+  const pid = pending.map(p => p.id);
+  for (let i = 0; i < pid.length; i += 200) {
+    const chunk = pid.slice(i, i + 200);
+    const body = JSON.stringify({ query: '*:*', filter: ['{!terms f=id separator=|}' + chunk.join('|')],
+      fields: '*', limit: chunk.length });
+    const j = JSON.parse(await req(CORE + '/select', body));
+    for (const d of j.response.docs) docs.push(d);
+  }
+  const byId = new Map(docs.map(d => [d.id, d]));
+
+  const updates = [];
+  let changed = 0, dropped = 0, termsKept = 0;
+  const kept = [];
+  for (const p of pending) {
+    const d = byId.get(p.id);
+    if (!d) { console.error('  WARNING: ' + p.id + ' vanished from the core between phases; skipped'); continue; }
+    const removals = p.removals;
     changed++; dropped += removals.length;
 
     const terms = Array.isArray(d._terms) ? d._terms.slice() : [];
@@ -116,17 +151,9 @@ function req(url, body) {
     }
     for (const r of removals) if (elsewhere.has(r)) { termsKept++; kept.push(d.id + ' keeps term ' + r); }
     const nextTerms = terms.filter(t => !(removals.indexOf(t) >= 0 && !elsewhere.has(t)));
-    const nextSyn = sIn.filter(x => removals.indexOf(x) < 0);
-    const u = { id: d.id, synonyms: { set: nextSyn.length ? nextSyn : null } };
+    const u = { id: d.id, synonyms: { set: p.next.length ? p.next : null } };
     if (nextTerms.length !== terms.length) u._terms = { set: nextTerms };
     updates.push(u);
-  }
-
-  if (mismatched) {
-    console.error('\nABORT: ' + mismatched + ' gene(s) have synonyms in mongo that the core lacks, so the core'
-      + ' is not merely stale and `set` could lose data. Nothing was written.');
-    for (const b of bad) console.error('  ' + b);
-    await client.close(); process.exit(2);
   }
 
   console.log('genes to update             : ' + changed);

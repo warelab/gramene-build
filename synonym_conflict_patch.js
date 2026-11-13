@@ -17,10 +17,17 @@
 // (LOC_Os01g01080) is absent from that synonym list while the other locus's is present.
 //
 // THE RULE. Drop synonym S from gene G when all of:
-//   * S is the primary `_id` of some other gene in this site  (S !== G._id)
+//   * S identifies some other gene in this site -- either as that gene's primary `_id` OR as its
+//     `alt_id`. The alt_id half is not optional: the MSU genome (oryza_sativamsu) exists only in
+//     the rice site, so in maize/sorghum/grapevine a contaminating LOC_Os* id is nobody's `_id`
+//     and an id-only rule silently leaves it in place -- which is exactly what the first version
+//     of this did, caught by verifying `synonyms:"LOC_Os01g18850"` per site rather than carrying
+//     rice's result over.
 //   * S is not one of G's own `alt_id`s                        (those are G's real synonyms)
-//   * G and the gene S names are NOT plausibly the same locus: different chromosome, or disjoint
-//     intervals more than ADJACENCY apart.
+//   * G and the gene(s) S names are NOT plausibly the same locus: different chromosome, or
+//     disjoint intervals more than ADJACENCY apart. When S identifies several genes (an MSU id can
+//     be the alt_id of more than one RAP locus), S is kept if ANY of them is G or is adjacent to
+//     G -- the conservative reading.
 //
 // That last clause is the one that matters, and it is not cosmetic. Some synonyms that are another
 // gene's id are LEGITIMATE: a split or merged gene model properly carries its neighbour's retired
@@ -42,22 +49,27 @@ const APPLY = process.argv.indexOf('--apply') >= 0;
 const VERBOSE = process.argv.indexOf('--verbose') >= 0;
 const ADJACENCY = Number(process.env.SYNONYM_ADJACENCY || 2000);
 
-// exported so a caller can apply exactly this rule without restating it
-function conflicts(gene, isGeneId, locOf, adjacency) {
+// exported so a caller can apply exactly this rule without restating it.
+// ownersOf(s) -> [{_id, location}] for every gene S identifies, by _id or by alt_id.
+function conflicts(gene, ownersOf, adjacency) {
   const own = Array.isArray(gene.alt_id) ? gene.alt_id : (gene.alt_id ? [gene.alt_id] : []);
   const syns = Array.isArray(gene.synonyms) ? gene.synonyms : (gene.synonyms ? [gene.synonyms] : []);
   const out = [];
   for (const s of syns) {
-    if (!isGeneId(s) || s === gene._id || own.indexOf(s) >= 0) continue;
-    const a = gene.location, b = locOf(s);
-    // No coordinates on either side: cannot establish they are the same locus, so the symbol-keyed
-    // collision is the likelier explanation. Drop it, but say so under --verbose.
-    if (!a || !b) { out.push(s); continue; }
-    if (a.region === b.region) {
+    if (s === gene._id || own.indexOf(s) >= 0) continue;
+    const owners = ownersOf(s);
+    if (!owners || !owners.length) continue;             // identifies nothing here: leave it alone
+    if (owners.some(o => o._id === gene._id)) continue;  // it is this gene's own identifier
+    const a = gene.location;
+    // Same locus if ANY owner overlaps or sits within ADJACENCY. No coordinates to compare means we
+    // cannot establish that, and the symbol-keyed collision is the likelier explanation.
+    const sameLocus = owners.some(o => {
+      const b = o.location;
+      if (!a || !b || a.region !== b.region) return false;
       const gap = Math.max(0, Math.max(a.start, b.start) - Math.min(a.end, b.end));
-      if (gap <= adjacency) continue;              // overlapping or adjacent: a model revision
-    }
-    out.push(s);
+      return gap <= adjacency;
+    });
+    if (!sameLocus) out.push(s);
   }
   return out;
 }
@@ -69,25 +81,30 @@ function conflicts(gene, isGeneId, locOf, adjacency) {
   console.log((APPLY ? 'PATCHING ' : 'dry run against ') + DB + '.genes'
     + (APPLY ? '' : ' -- nothing is written') + '   (adjacency ' + ADJACENCY + ' bp)\n');
 
-  // Which synonym strings are also a gene id? distinct() keeps this to one pass plus a few
-  // batched lookups rather than a per-gene query over the whole collection.
-  const syns = await genes.distinct('synonyms');
-  const idSet = new Set();
+  // Which synonym strings identify a gene here, by _id or by alt_id? distinct() keeps this to one
+  // pass plus batched lookups rather than a per-gene query over the whole collection.
+  const syns = (await genes.distinct('synonyms')).filter(s => typeof s === 'string');
+  const owners = new Map();                       // synonym string -> [{_id, location}]
+  const add = (k, g) => {
+    if (!owners.has(k)) owners.set(k, []);
+    if (!owners.get(k).some(o => o._id === g._id)) owners.get(k).push({ _id: g._id, location: g.location });
+  };
+  let byId = 0, byAlt = 0;
   for (let i = 0; i < syns.length; i += 2000) {
-    const batch = syns.slice(i, i + 2000).filter(s => typeof s === 'string');
-    for (const g of await genes.find({ _id: { $in: batch } }, { projection: { _id: 1 } }).toArray()) idSet.add(g._id);
+    const batch = syns.slice(i, i + 2000);
+    for (const g of await genes.find({ _id: { $in: batch } },
+      { projection: { location: 1 } }).toArray()) { add(g._id, g); byId++; }
+    for (const g of await genes.find({ alt_id: { $in: batch } },
+      { projection: { location: 1, alt_id: 1 } }).toArray()) {
+      for (const a of (Array.isArray(g.alt_id) ? g.alt_id : [g.alt_id])) {
+        if (batch.indexOf(a) >= 0) { add(a, g); byAlt++; }
+      }
+    }
   }
   console.log('distinct synonym strings      : ' + syns.length);
-  console.log('of those, also a gene _id     : ' + idSet.size);
-
-  const locs = new Map();
-  const ids = Array.from(idSet);
-  for (let i = 0; i < ids.length; i += 2000) {
-    for (const g of await genes.find({ _id: { $in: ids.slice(i, i + 2000) } },
-      { projection: { location: 1 } }).toArray()) locs.set(g._id, g.location);
-  }
-  const isGeneId = s => idSet.has(s);
-  const locOf = s => locs.get(s);
+  console.log('of those, identify a gene     : ' + owners.size + '  (' + byId + ' by _id, ' + byAlt + ' by alt_id)');
+  const ownersOf = s => owners.get(s);
+  const ids = Array.from(owners.keys());
 
   const ops = [];
   let changed = 0, removed = 0, keptAdjacent = 0;
@@ -96,9 +113,9 @@ function conflicts(gene, isGeneId, locOf, adjacency) {
     { projection: { synonyms: 1, alt_id: 1, location: 1, name: 1, system_name: 1 } });
   while (await cursor.hasNext()) {
     const g = await cursor.next();
-    const bad = conflicts(g, isGeneId, locOf, ADJACENCY);
+    const bad = conflicts(g, ownersOf, ADJACENCY);
     // count what the adjacency clause spared, so the exemption stays visible
-    const all = conflicts(g, isGeneId, locOf, -1);
+    const all = conflicts(g, ownersOf, -1);
     if (all.length > bad.length) {
       keptAdjacent += all.length - bad.length;
       for (const s of all) if (bad.indexOf(s) < 0) kept.push(g._id + ' keeps ' + s);
